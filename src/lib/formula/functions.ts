@@ -1,3 +1,4 @@
+import { roundTo } from "@/lib/coerce/numbers";
 import type { FormulaResultType } from "@/lib/domain/field";
 import { addToDate, dateDiff, parseDateUnit, parseStoredDate, todayIn } from "./dates";
 import {
@@ -77,12 +78,6 @@ function finite(value: number): number | FormulaError {
   return Number.isFinite(value) ? value : formulaError("#NUM!", "Number is out of range");
 }
 
-/** Rounds half away from zero. `toPrecision` cancels binary noise: 1.005 * 100 is 100.49999999999999. */
-function round(value: number, digits: number): number {
-  const factor = 10 ** digits;
-  return (Math.sign(value) * Math.round(Number((Math.abs(value) * factor).toPrecision(15)))) / factor;
-}
-
 const always =
   (type: ValueType) =>
   (): ValueType =>
@@ -159,7 +154,7 @@ export const FUNCTIONS: Record<string, FunctionDefinition> = {
       const numbers = numberArgs(args);
       if (isFormulaError(numbers)) return numbers;
       const [value, digits = 0] = numbers;
-      return finite(round(value, Math.max(-10, Math.min(10, Math.trunc(digits)))));
+      return finite(roundTo(value, Math.max(-10, Math.min(10, Math.trunc(digits)))));
     },
   },
   CONCAT: {

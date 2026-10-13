@@ -1,3 +1,5 @@
+import { wallTimeAt } from "@/lib/timezone";
+
 /**
  * Date math for formulas works on UTC milliseconds and never reads the
  * process time zone, so results are identical in every TZ (the task runs
@@ -62,14 +64,8 @@ export function dateDiff(from: number, to: number, unit: DateUnit): number {
 
 /** Today's calendar date in the given time zone, as UTC midnight milliseconds. */
 export function todayIn(now: Date, timeZone = "UTC"): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(now);
-  const part = (type: string) => Number(parts.find((p) => p.type === type)?.value);
-  return Date.UTC(part("year"), part("month") - 1, part("day"));
+  const { year, month, day } = wallTimeAt(now.getTime(), timeZone);
+  return Date.UTC(year, month - 1, day);
 }
 
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
