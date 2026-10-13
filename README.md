@@ -12,6 +12,7 @@ A simplified Airtable built with Next.js App Router. The task statement is in [f
 npm install
 npm run dev        # start the dev server
 npm test           # run unit tests (Vitest)
+npm run test:tz    # run unit tests in Pacific/Auckland and America/Los_Angeles
 npm run typecheck  # tsc --noEmit
 npm run lint
 ```
