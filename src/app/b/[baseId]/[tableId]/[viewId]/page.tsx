@@ -8,7 +8,7 @@ import { ViewTabs } from "@/features/table-shell/ViewTabs";
 import { getCurrentUser } from "@/server/auth";
 import { now } from "@/server/clock";
 import { linkedRecordLabels, queryRows } from "@/server/rows";
-import { getBase, getTable } from "@/server/tables";
+import { getBase, getTable, getView } from "@/server/tables";
 
 // Matches the grid store's block size, so the first block is complete.
 const INITIAL_WINDOW = BLOCK_SIZE;
@@ -67,6 +67,7 @@ export default async function ViewPage({ params }: PageProps<"/b/[baseId]/[table
         fields={table.fields}
         primaryFieldId={table.primaryFieldId}
         view={view}
+        viewVersion={getView(view.id)?.version ?? 0}
         initialWindow={{ ...initialWindow, offset: 0, linkedLabels }}
       />
     </div>

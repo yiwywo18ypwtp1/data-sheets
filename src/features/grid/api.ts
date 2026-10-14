@@ -2,7 +2,7 @@ import type { ErrorBody, RowWindowResponse } from "@/lib/domain/api";
 import type { FilterGroup } from "@/lib/domain/filter";
 import type { RowOp, RowOpResult } from "@/lib/domain/row";
 import { encodeFilterParam, encodeSortParam } from "@/lib/domain/query";
-import type { Sort } from "@/lib/domain/view";
+import type { Sort, View } from "@/lib/domain/view";
 
 /**
  * Client-side calls to the Route Handlers. Components never build URLs or parse
@@ -15,6 +15,7 @@ export class ApiRequestError extends Error {
     readonly code: string,
     message: string,
     readonly fieldErrors?: Record<string, string>,
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = "ApiRequestError";
@@ -30,6 +31,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
       body?.error.code ?? "HTTP_ERROR",
       body?.error.message ?? `Request failed (${response.status})`,
       body?.error.fieldErrors,
+      body?.error.details,
     );
   }
   return (await response.json()) as T;
@@ -63,4 +65,13 @@ export async function searchRecords(tableId: string, q: string, signal: AbortSig
   const params = new URLSearchParams({ q, limit: "20" });
   const { records } = await request<{ records: RecordOption[] }>(`/api/tables/${tableId}/records/search?${params}`, { signal });
   return records;
+}
+
+/** Saves a view; `version` goes in If-Match. A 412 carries the current view and version in `details`. */
+export function saveView(view: View, version: number) {
+  return request<{ view: View; version: number }>(`/api/views/${view.id}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json", "if-match": `"${version}"` },
+    body: JSON.stringify(view),
+  });
 }

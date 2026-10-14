@@ -292,3 +292,64 @@ describe("GridStore writes", () => {
     expect(store.getRowAt(1)?.saveErrors).toBeUndefined();
   });
 });
+
+describe("GridStore adding and deleting rows", () => {
+  function setup(fetchWindow: FetchWindow = async (_q, o, l) => windowOf(o, l)) {
+    const batches: { ops: RowOp[]; answer: (results: RowOpResult[]) => void }[] = [];
+    const sendBatch: SendBatch = (ops) => new Promise((resolve) => batches.push({ ops, answer: resolve }));
+    const store = createStore({ query: baseQuery, fetchWindow, sendBatch, initialWindow: windowOf(0, BLOCK_SIZE) });
+    return { store, batches };
+  }
+
+  it("adds a row at the bottom with a client id, and drops it if the server refuses", async () => {
+    const { store, batches } = setup();
+    const index = store.addRow({ n: 1 });
+    expect(index).toBe(TOTAL);
+    expect(store.total).toBe(TOTAL + 1);
+    const id = store.getRowAt(index)!.id;
+    expect(id).toMatch(/^row_/);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(batches[0].ops).toEqual([{ op: "create", rowId: id, values: { n: 1 } }]);
+    batches[0].answer([{ ok: false, rowId: id, error: { code: "X", message: "no" } }]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.total).toBe(TOTAL);
+    expect(store.getRowAt(index)).toBeUndefined();
+    expect(store.announcement).toBe("Couldn't add the record");
+  });
+
+  it("keeps a confirmed new row at the bottom until a window returns it", async () => {
+    let includeNew: Row | null = null;
+    const { store, batches } = setup(async (_q, offset, limit) => {
+      const window = windowOf(offset, limit);
+      return includeNew ? { ...window, rows: [...window.rows.slice(0, -1), includeNew], total: TOTAL + 1 } : window;
+    });
+    const index = store.addRow();
+    const id = store.getRowAt(index)!.id;
+    await vi.advanceTimersByTimeAsync(0);
+    const created = { ...row(0), id, rev: 1 };
+    batches[0].answer([{ ok: true, rowId: id, row: created }]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getRowAt(index)?.rev).toBe(1);
+
+    includeNew = created;
+    store.setQuery({ ...baseQuery }); // any reload that returns the row
+    store.ensureRange(0, 10);
+    await vi.runAllTimersAsync();
+    expect(store.total).toBe(TOTAL + 1); // counted once, not twice
+  });
+
+  it("marks rows as deleting, then reloads the windows once the server confirms", async () => {
+    const fetchWindow = vi.fn(async (_q: RowQuery, o: number, l: number) => windowOf(o, l));
+    const { store, batches } = setup(fetchWindow);
+    store.ensureRange(0, 10);
+    store.deleteRows(["row_a_3"]);
+    expect(store.getRowAt(3)?.deleting).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(batches[0].ops).toEqual([{ op: "delete", rowId: "row_a_3", rev: 1 }]);
+    batches[0].answer([{ ok: true, rowId: "row_a_3", row: null }]);
+    await vi.runAllTimersAsync();
+    expect(fetchWindow).toHaveBeenCalled(); // windows reloaded
+  });
+});

@@ -11,13 +11,15 @@ import { GridFooter } from "./GridFooter";
 import { GridHeader } from "./GridHeader";
 import { cellId, GridRow } from "./GridRow";
 import { GridStore } from "./GridStore";
-import { FOOTER_HEIGHT, gridColumns, GUTTER_WIDTH, HEADER_HEIGHT, ROW_HEIGHTS } from "./layout";
+import { GridToolbar } from "./GridToolbar";
+import { FOOTER_HEIGHT, gridColumns, GUTTER_WIDTH, HEADER_HEIGHT, moveField, ROW_HEIGHTS, setColumnWidth, setFieldHidden } from "./layout";
 import type { CellPosition } from "./selection";
 import { useCellEditing } from "./useCellEditing";
 import { GridEditingContext } from "./GridEditingContext";
 import { useGridSelection } from "./useGridSelection";
 import { useGridStore } from "./useGridStore";
 import { useViewerLocale } from "./useViewerLocale";
+import { useViewLayout } from "./useViewLayout";
 
 type GridProps = {
   tableId: string;
@@ -27,6 +29,8 @@ type GridProps = {
   fields: Field[];
   primaryFieldId: string;
   view: View;
+  /** The view's version, sent as If-Match when the column layout is saved. */
+  viewVersion: number;
   initialWindow: RowWindowResponse;
 };
 
@@ -43,7 +47,7 @@ const INITIAL_RECT = { width: 1280, height: 800 };
  * through `aria-activedescendant`, which works even though cells come and go as
  * they scroll in and out of view.
  */
-export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view, initialWindow }: GridProps) {
+export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view, viewVersion, initialWindow }: GridProps) {
   const [store] = useState(
     () =>
       new GridStore({
@@ -63,7 +67,8 @@ export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view
   const aggregates = useGridStore(store, (state) => state.aggregates);
   const activeCell = useGridStore(store, (state) => (state.selection ? `${state.selection.anchor.row}:${state.selection.anchor.col}` : null));
 
-  const columns = useMemo(() => gridColumns(fields, primaryFieldId, view), [fields, primaryFieldId, view]);
+  const viewLayout = useViewLayout(view, viewVersion, canEdit);
+  const columns = useMemo(() => gridColumns(fields, primaryFieldId, viewLayout.layout), [fields, primaryFieldId, viewLayout.layout]);
   const [pinned, ...scrollable] = columns;
   const pinnedWidth = GUTTER_WIDTH + pinned.width;
   // Intl formatters are expensive to create; build them once per column, not per cell render.
@@ -96,6 +101,11 @@ export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view
     scrollPaddingStart: pinnedWidth,
     initialRect: INITIAL_RECT,
   });
+
+  // Column sizes are estimates the virtualizer caches; after a resize or reorder it must re-measure.
+  useEffect(() => {
+    columnVirtualizer.measure();
+  }, [columnVirtualizer, columns]);
 
   const virtualRows = rowVirtualizer.getVirtualItems();
   const virtualColumns = columnVirtualizer.getVirtualItems();
@@ -138,61 +148,92 @@ export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view
   const width = columnVirtualizer.getTotalSize();
   const height = rowVirtualizer.getTotalSize();
 
+  function addRow() {
+    const index = store.addRow();
+    const cell = { row: index, col: 0 };
+    store.setSelection({ anchor: cell, focus: cell });
+    // The row count just grew; scroll once the virtualizer knows about the new row.
+    requestAnimationFrame(() => scrollToCell(cell));
+    scrollRef.current?.focus({ preventScroll: true });
+  }
+
   return (
-    <div
-      ref={scrollRef}
-      role="grid"
-      tabIndex={0}
-      aria-label={`${tableName} records`}
-      aria-rowcount={total + 2}
-      aria-colcount={columns.length}
-      aria-multiselectable
-      aria-activedescendant={activeCell ? cellId(idPrefix, activeRow, activeCol) : undefined}
-      className="relative min-h-0 flex-1 overflow-auto text-sm outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
-      onKeyDown={(event) => {
-        if (!selection.handleKey(event)) editing.handleKey(event);
-      }}
-      onPointerDown={selection.onPointerDown}
-      onPointerMove={selection.onPointerMove}
-      onDoubleClick={editing.onDoubleClick}
-    >
-      {/* Results of edits, clears and failed saves, for screen readers. Keyed so a repeated message is read again. */}
-      <div key={announcementId} role="status" aria-live="polite" className="sr-only">
-        {announcement}
-      </div>
-      {/* Not memoized on purpose: only the one open editor reads this context, so a new value re-renders one component. */}
-      <GridEditingContext.Provider value={editing.context}>
-        <div className="relative" style={{ width, height }}>
-          <GridHeader store={store} pinned={pinned} scrollable={scrollable} virtualColumns={virtualColumns} width={width} />
-          {/* Takes the rows' space in normal flow, so the sticky footer sits after them. */}
-          <div style={{ height: Math.max(0, height - HEADER_HEIGHT - FOOTER_HEIGHT) }} />
-          {virtualRows.map((virtualRow) => (
-            <GridRow
-              key={virtualRow.key}
+    <div className="flex min-h-0 flex-1 flex-col">
+      <GridToolbar
+        store={store}
+        canEdit={canEdit}
+        primaryFieldId={primaryFieldId}
+        fields={fields}
+        hiddenFieldIds={viewLayout.layout.hiddenFieldIds}
+        layoutError={viewLayout.error}
+        onAddRow={addRow}
+        onToggleHidden={(fieldId, hidden) => viewLayout.update((layout) => setFieldHidden(layout, fieldId, hidden))}
+      />
+      <div
+        ref={scrollRef}
+        role="grid"
+        tabIndex={0}
+        aria-label={`${tableName} records`}
+        aria-rowcount={total + 2}
+        aria-colcount={columns.length}
+        aria-multiselectable
+        aria-activedescendant={activeCell ? cellId(idPrefix, activeRow, activeCol) : undefined}
+        className="relative min-h-0 flex-1 overflow-auto text-sm outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
+        onKeyDown={(event) => {
+          if (!selection.handleKey(event)) editing.handleKey(event);
+        }}
+        onPointerDown={selection.onPointerDown}
+        onPointerMove={selection.onPointerMove}
+        onDoubleClick={editing.onDoubleClick}
+      >
+        {/* Results of edits, clears and failed saves, for screen readers. Keyed so a repeated message is read again. */}
+        <div key={announcementId} role="status" aria-live="polite" className="sr-only">
+          {announcement}
+        </div>
+        {/* Not memoized on purpose: only the one open editor reads this context, so a new value re-renders one component. */}
+        <GridEditingContext.Provider value={editing.context}>
+          <div className="relative" style={{ width, height }}>
+            <GridHeader
               store={store}
-              idPrefix={idPrefix}
-              index={virtualRow.index}
-              top={virtualRow.start}
-              height={virtualRow.size}
+              primaryFieldId={primaryFieldId}
+              pinned={pinned}
+              scrollable={scrollable}
+              virtualColumns={virtualColumns}
               width={width}
+              onResize={(fieldId, next) => viewLayout.update((layout) => setColumnWidth(layout, fieldId, next))}
+              onMove={(fieldId, direction) => viewLayout.update((layout) => moveField(fields, primaryFieldId, layout, fieldId, direction))}
+              onHide={(fieldId) => viewLayout.update((layout) => setFieldHidden(layout, fieldId, true))}
+            />
+            {/* Takes the rows' space in normal flow, so the sticky footer sits after them. */}
+            <div style={{ height: Math.max(0, height - HEADER_HEIGHT - FOOTER_HEIGHT) }} />
+            {virtualRows.map((virtualRow) => (
+              <GridRow
+                key={virtualRow.key}
+                store={store}
+                idPrefix={idPrefix}
+                index={virtualRow.index}
+                top={virtualRow.start}
+                height={virtualRow.size}
+                width={width}
+                pinned={pinned}
+                scrollable={scrollable}
+                virtualColumns={virtualColumns}
+                formatters={formatters}
+              />
+            ))}
+            <GridFooter
+              locale={locale}
+              total={total}
+              aggregates={aggregates}
               pinned={pinned}
               scrollable={scrollable}
               virtualColumns={virtualColumns}
               formatters={formatters}
+              width={width}
             />
-          ))}
-          <GridFooter
-            locale={locale}
-            total={total}
-            aggregates={aggregates}
-            pinned={pinned}
-            scrollable={scrollable}
-            virtualColumns={virtualColumns}
-            formatters={formatters}
-            width={width}
-          />
-        </div>
-      </GridEditingContext.Provider>
+          </div>
+        </GridEditingContext.Provider>
+      </div>
     </div>
   );
 }

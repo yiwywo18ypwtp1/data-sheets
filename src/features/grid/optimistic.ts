@@ -12,11 +12,11 @@ import { isFormulaError, toCellValue } from "@/lib/formula/values";
  * dropping it from the list: the other pending edits stay.
  */
 
-/** One unconfirmed change to one row (one `update` op in a batch). */
-export type PendingEdit = { opId: number; rowId: string; values: Record<string, CellValue> };
+/** One unconfirmed change to one row: one op in a batch. `values` is empty for a delete. */
+export type PendingEdit = { opId: number; op: "create" | "update" | "delete"; rowId: string; values: Record<string, CellValue> };
 
-/** A row as displayed: may carry per-cell save errors and a "still saving" flag. */
-export type DisplayRow = Row & { saveErrors?: Record<string, string>; saving?: boolean };
+/** A row as displayed: may carry per-cell save errors, a "still saving" and a "being deleted" flag. */
+export type DisplayRow = Row & { saveErrors?: Record<string, string>; saving?: boolean; deleting?: boolean };
 
 export type FormulaContext = { fieldsById: Map<string, Field>; graph: DependencyGraph };
 
@@ -32,6 +32,7 @@ export function displayRow(
   now: Date,
 ): DisplayRow {
   if (edits.length === 0) return saveErrors ? { ...base, saveErrors } : base;
+  const deleting = edits.some((edit) => edit.op === "delete");
 
   const values = { ...base.values };
   const errors = { ...base.errors };
@@ -53,5 +54,5 @@ export function displayRow(
     }
   }
 
-  return { ...base, values, errors, saving: true, ...(saveErrors ? { saveErrors } : {}) };
+  return { ...base, values, errors, saving: true, ...(deleting ? { deleting } : {}), ...(saveErrors ? { saveErrors } : {}) };
 }

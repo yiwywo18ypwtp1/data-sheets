@@ -2,6 +2,7 @@ import type { Aggregates, RowWindowResponse } from "@/lib/domain/api";
 import type { CellValue } from "@/lib/domain/cell";
 import type { Field } from "@/lib/domain/field";
 import { isConditionComplete, type FilterGroup } from "@/lib/domain/filter";
+import { newId } from "@/lib/domain/ids";
 import { MAX_BATCH_OPS, type Row, type RowOp, type RowOpResult } from "@/lib/domain/row";
 import type { RowQuery } from "./api";
 import { buildFormulaContext, displayRow, type DisplayRow, type FormulaContext, type PendingEdit } from "./optimistic";
@@ -75,7 +76,15 @@ export class GridStore {
   private nextOpId = 1;
 
   query: RowQuery;
-  total = 0;
+  /** Rows in the server's filtered result. */
+  private serverTotal = 0;
+  private totalKnown = false;
+  /**
+   * Rows added in this session that the server hasn't returned in a window yet. They're
+   * shown after the server's rows (like Airtable keeps a new record at the bottom until
+   * the view is reloaded) and leave this list once a window includes them.
+   */
+  private localRows: string[] = [];
   aggregates: Aggregates = {};
   /** Lives here (not in React state) so only rows whose part of it changes re-render. */
   selection: Selection | null = null;
@@ -104,14 +113,27 @@ export class GridStore {
 
   // ---- reading rows ------------------------------------------------------------
 
-  getRowAt(index: number): DisplayRow | undefined {
+  get total(): number {
+    return this.serverTotal + this.localRows.length;
+  }
+
+  private isLocalIndex(index: number): boolean {
+    return this.totalKnown && index >= this.serverTotal;
+  }
+
+  private rowIdAt(index: number): string | undefined {
+    if (this.isLocalIndex(index)) return this.localRows[index - this.serverTotal];
     const block = this.blocks.get(Math.floor(index / BLOCK_SIZE));
-    if (block?.status !== "ready") return undefined;
-    const id = block.rowIds[index % BLOCK_SIZE];
+    return block?.status === "ready" ? block.rowIds[index % BLOCK_SIZE] : undefined;
+  }
+
+  getRowAt(index: number): DisplayRow | undefined {
+    const id = this.rowIdAt(index);
     return id === undefined ? undefined : (this.display.get(id) ?? this.rows.get(id));
   }
 
   getRowStatus(index: number): RowStatus {
+    if (this.isLocalIndex(index)) return "ready";
     const block = this.blocks.get(Math.floor(index / BLOCK_SIZE));
     if (!block || block.status === "loading") return "loading";
     return block.status;
@@ -145,6 +167,13 @@ export class GridStore {
     if (!this.selection) return "";
     const { left, right } = rangeOf(this.selection);
     return `${left}:${right}`;
+  }
+
+  /** "top:bottom" of the selected rows, or "" — what the toolbar's delete button acts on. */
+  getSelectedRowsKey(): string {
+    if (!this.selection) return "";
+    const { top, bottom } = rangeOf(this.selection);
+    return `${top}:${bottom}`;
   }
 
   startEditing(editing: EditingState): void {
@@ -183,18 +212,43 @@ export class GridStore {
       byRow.get(rowId)![fieldId] = value;
     }
     for (const [rowId, values] of byRow) {
-      const edit: PendingEdit = { opId: this.nextOpId++, rowId, values };
-      this.pending.set(rowId, [...(this.pending.get(rowId) ?? []), edit]);
-      this.queue.push(edit);
-      // A new attempt replaces the old error on those cells.
+      // A new attempt replaces the old error on those cells (before the row is rebuilt).
       const errors = this.saveErrors.get(rowId);
       if (errors) {
         for (const fieldId of Object.keys(values)) delete errors[fieldId];
         if (Object.keys(errors).length === 0) this.saveErrors.delete(rowId);
       }
-      this.refreshRow(rowId);
+      this.enqueue({ opId: this.nextOpId++, op: "update", rowId, values });
     }
     this.notify();
+  }
+
+  /** Adds an empty record at the bottom, optimistically, and returns its index. */
+  addRow(values: Record<string, CellValue> = {}): number {
+    const now = new Date().toISOString();
+    const id = newId("row");
+    // A client-generated id, so the row keeps its identity when the server confirms it.
+    this.rows.set(id, { id, values, createdAt: now, updatedAt: now, rev: 0 });
+    this.localRows.push(id);
+    this.enqueue({ opId: this.nextOpId++, op: "create", rowId: id, values });
+    this.notify();
+    return this.total - 1;
+  }
+
+  /**
+   * Deletes records. Not optimistic: the rows are shown as "deleting" until the server
+   * confirms, then the windows are reloaded. Removing rows from the middle of loaded
+   * blocks would shift every index after them, and deletion can't be undone in Core.
+   */
+  deleteRows(rowIds: string[]): void {
+    for (const rowId of rowIds) this.enqueue({ opId: this.nextOpId++, op: "delete", rowId, values: {} });
+    this.notify();
+  }
+
+  private enqueue(edit: PendingEdit) {
+    this.pending.set(edit.rowId, [...(this.pending.get(edit.rowId) ?? []), edit]);
+    this.queue.push(edit);
+    this.refreshRow(edit.rowId);
     this.flushTimer ??= setTimeout(() => {
       this.flushTimer = null;
       void this.flush();
@@ -217,9 +271,7 @@ export class GridStore {
 
     let results: RowOpResult[];
     try {
-      results = await this.sendBatch(
-        batch.map((edit) => ({ op: "update", rowId: edit.rowId, values: edit.values, rev: this.rows.get(edit.rowId)?.rev ?? 0 })),
-      );
+      results = await this.sendBatch(batch.map((edit) => this.toRowOp(edit)));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Network error";
       results = batch.map((edit) => ({ ok: false, rowId: edit.rowId, error: { code: "NETWORK", message: `Not saved: ${message}` } }));
@@ -227,10 +279,20 @@ export class GridStore {
     this.inFlight = false;
 
     batch.forEach((edit, i) => this.settle(edit, results[i]));
-    const failed = results.filter((result) => !result.ok).length;
+    // Failed creates announce themselves in `settle`; this counts edits and deletes.
+    const failed = batch.filter((edit, i) => edit.op !== "create" && !results[i]?.ok).length;
     if (failed > 0) this.announce(`${failed} ${failed === 1 ? "change" : "changes"} couldn't be saved`);
+    // Deleted rows leave holes in the loaded windows: load them again.
+    if (batch.some((edit, i) => edit.op === "delete" && results[i]?.ok)) this.reload();
     this.notify();
     if (this.queue.length > 0) void this.flush();
+  }
+
+  private toRowOp(edit: PendingEdit): RowOp {
+    const rev = this.rows.get(edit.rowId)?.rev ?? 0;
+    if (edit.op === "create") return { op: "create", rowId: edit.rowId, values: edit.values };
+    if (edit.op === "delete") return { op: "delete", rowId: edit.rowId, rev };
+    return { op: "update", rowId: edit.rowId, values: edit.values, rev };
   }
 
   /** Confirms or rolls back one edit. A rollback only drops this edit: other pending edits stay applied. */
@@ -240,6 +302,12 @@ export class GridStore {
 
     if (result?.ok) {
       if (result.row) this.rows.set(result.row.id, result.row);
+      if (edit.op === "delete") this.forgetRow(edit.rowId);
+    } else if (edit.op === "create") {
+      // The record doesn't exist on the server, so it disappears (with any edits made to it meanwhile).
+      this.forgetRow(edit.rowId);
+      this.announce("Couldn't add the record");
+      return;
     } else {
       const errors = { ...this.saveErrors.get(edit.rowId) };
       for (const fieldId of Object.keys(edit.values)) {
@@ -248,6 +316,13 @@ export class GridStore {
       this.saveErrors.set(edit.rowId, errors);
     }
     this.refreshRow(edit.rowId);
+  }
+
+  private forgetRow(rowId: string) {
+    this.rows.delete(rowId);
+    this.display.delete(rowId);
+    this.saveErrors.delete(rowId);
+    this.localRows = this.localRows.filter((id) => id !== rowId);
   }
 
   private refreshRow(rowId: string) {
@@ -284,11 +359,24 @@ export class GridStore {
     this.rows.clear();
     this.display.clear();
     this.labels.clear();
+    this.localRows = [];
     this.query = query;
     // Row positions mean something else in the new result, so the old selection would point at other rows.
     this.selection = null;
     this.editing = null;
     this.notify();
+    this.loadWanted();
+  }
+
+  /**
+   * Loads the current query's windows again (after deletes), keeping what's on screen
+   * until the new data arrives. The selection is cleared: positions may have shifted.
+   */
+  reload(): void {
+    this.generation++;
+    this.abortAll();
+    this.blocks.clear();
+    this.selection = null;
     this.loadWanted();
   }
 
@@ -320,8 +408,11 @@ export class GridStore {
 
   private loadWanted() {
     if (!this.wanted) return;
-    const firstBlock = Math.floor(Math.max(0, this.wanted.first) / BLOCK_SIZE);
-    const lastBlock = Math.floor(Math.max(0, this.wanted.last) / BLOCK_SIZE);
+    // Indexes past the server's rows belong to local rows: there's nothing to fetch for them.
+    // Before the first answer the total is unknown, so nothing is clamped.
+    const lastServerIndex = this.totalKnown ? Math.max(0, this.serverTotal - 1) : Infinity;
+    const firstBlock = Math.floor(Math.min(Math.max(0, this.wanted.first), lastServerIndex) / BLOCK_SIZE);
+    const lastBlock = Math.floor(Math.min(Math.max(0, this.wanted.last), lastServerIndex) / BLOCK_SIZE);
 
     // Requests for blocks the user has already scrolled away from are cancelled.
     for (const [index, block] of this.blocks) {
@@ -389,7 +480,11 @@ export class GridStore {
     }
     for (const [id, label] of Object.entries(response.linkedLabels)) this.labels.set(id, label);
     this.blocks.set(blockIndex, { status: "ready", rowIds: response.rows.map((row) => row.id) });
-    this.total = response.total;
+    // A row added here is now part of the server's result: stop showing it separately.
+    const returned = new Set(response.rows.map((row) => row.id));
+    if (this.localRows.some((id) => returned.has(id))) this.localRows = this.localRows.filter((id) => !returned.has(id));
+    this.serverTotal = response.total;
+    this.totalKnown = true;
     // Keep the old object when nothing changed, so footer cells don't re-render.
     if (JSON.stringify(response.aggregates) !== JSON.stringify(this.aggregates)) this.aggregates = response.aggregates;
   }

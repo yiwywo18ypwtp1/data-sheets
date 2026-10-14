@@ -29,8 +29,8 @@ describe("displayRow", () => {
     const row = displayRow(
       base,
       [
-        { opId: 1, rowId: "r1", values: { qty: 3 } },
-        { opId: 2, rowId: "r1", values: { qty: 4, note: "b" } },
+        { opId: 1, op: "update", rowId: "r1", values: { qty: 3 } },
+        { opId: 2, op: "update", rowId: "r1", values: { qty: 4, note: "b" } },
       ],
       undefined,
       context,
@@ -42,17 +42,23 @@ describe("displayRow", () => {
   });
 
   it("shows formula errors optimistically", () => {
-    const row = displayRow(base, [{ opId: 1, rowId: "r1", values: { qty: 0 } }], undefined, context, now);
+    const row = displayRow(base, [{ opId: 1, op: "update", rowId: "r1", values: { qty: 0 } }], undefined, context, now);
     expect(row.values.ratio).toBeNull();
     expect(row.errors?.ratio).toBe("#DIV/0! Division by zero");
   });
 
   it("only recomputes formulas that depend on the edit", () => {
-    const row = displayRow({ ...base, values: { ...base.values, total: 999 } }, [{ opId: 1, rowId: "r1", values: { note: "x" } }], undefined, context, now);
+    const row = displayRow({ ...base, values: { ...base.values, total: 999 } }, [{ opId: 1, op: "update", rowId: "r1", values: { note: "x" } }], undefined, context, now);
     expect(row.values.total).toBe(999);
   });
 
   it("carries save errors for failed cells", () => {
     expect(displayRow(base, [], { qty: "Must be ≥ 0" }, context, now).saveErrors).toEqual({ qty: "Must be ≥ 0" });
+  });
+});
+
+describe("displayRow deletes", () => {
+  it("marks a row being deleted", () => {
+    expect(displayRow(base, [{ opId: 1, op: "delete", rowId: "r1", values: {} }], undefined, context, now).deleting).toBe(true);
   });
 });

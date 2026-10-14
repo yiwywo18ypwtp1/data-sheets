@@ -109,7 +109,8 @@ export const GridRow = memo(function GridRow({ store, idPrefix, index, top, heig
       role="row"
       aria-rowindex={index + 2}
       aria-busy={status === "loading" || undefined}
-      className="absolute left-0 flex border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+      // A row being deleted stays visible, dimmed and struck through, until the server confirms.
+      className={`absolute left-0 flex border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950 ${row?.deleting ? "line-through opacity-40" : ""}`}
       style={{ top, height, width }}
     >
       <div className="sticky left-0 z-10 flex h-full bg-white dark:bg-zinc-950">

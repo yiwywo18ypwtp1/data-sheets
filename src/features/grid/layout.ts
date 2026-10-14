@@ -1,5 +1,5 @@
 import type { Field } from "@/lib/domain/field";
-import type { RowHeight, View } from "@/lib/domain/view";
+import { MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH, type RowHeight, type View } from "@/lib/domain/view";
 
 export const HEADER_HEIGHT = 34;
 export const FOOTER_HEIGHT = 32;
@@ -41,4 +41,37 @@ export function gridColumns(fields: Field[], primaryFieldId: string, view: Pick<
     const field = byId.get(id);
     return field ? [{ field, width: view.columnWidths[id] ?? (id === primaryFieldId ? 220 : defaultWidth(field)) }] : [];
   });
+}
+
+/** The parts of a view the grid changes directly (saved at once, without the view panel's save/reset). */
+export type ViewLayout = Pick<View, "fieldOrder" | "hiddenFieldIds" | "columnWidths">;
+
+/** Every field id in display order, including hidden ones and fields the view doesn't list yet. */
+function fullOrder(fields: Field[], layout: ViewLayout): string[] {
+  const ids = new Set(fields.map((field) => field.id));
+  const listed = layout.fieldOrder.filter((id) => ids.has(id));
+  return [...listed, ...fields.map((field) => field.id).filter((id) => !listed.includes(id))];
+}
+
+/** Moves a field one place left or right among the visible, non-primary columns. */
+export function moveField(fields: Field[], primaryFieldId: string, layout: ViewLayout, fieldId: string, direction: -1 | 1): ViewLayout {
+  const order = fullOrder(fields, layout);
+  const visible = order.filter((id) => id !== primaryFieldId && !layout.hiddenFieldIds.includes(id));
+  const from = visible.indexOf(fieldId);
+  const neighbour = visible[from + direction];
+  if (from === -1 || neighbour === undefined) return layout;
+  const a = order.indexOf(fieldId);
+  const b = order.indexOf(neighbour);
+  [order[a], order[b]] = [order[b], order[a]];
+  return { ...layout, fieldOrder: order };
+}
+
+export function setFieldHidden(layout: ViewLayout, fieldId: string, hidden: boolean): ViewLayout {
+  const others = layout.hiddenFieldIds.filter((id) => id !== fieldId);
+  return { ...layout, hiddenFieldIds: hidden ? [...others, fieldId] : others };
+}
+
+export function setColumnWidth(layout: ViewLayout, fieldId: string, width: number): ViewLayout {
+  const clamped = Math.round(Math.max(MIN_COLUMN_WIDTH, Math.min(MAX_COLUMN_WIDTH, width)));
+  return { ...layout, columnWidths: { ...layout.columnWidths, [fieldId]: clamped } };
 }
