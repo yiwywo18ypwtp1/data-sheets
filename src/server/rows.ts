@@ -60,7 +60,7 @@ export function markRowsChanged(tableId: string): void {
 /** "Today" filters change at midnight in the field's or viewer's zone; some zones are offset by 30 or 45 minutes. */
 const RELATIVE_DATE_TTL_MS = 15 * 60_000;
 
-function cacheKey(table: Pick<TableMeta, "id" | "fields">, query: RowQuery): string {
+function cacheKey(table: Pick<TableMeta, "id" | "fields">, query: Omit<RowQuery, "offset" | "limit">): string {
   const clock = usesRelativeDates(query.filter) ? Math.floor(query.context.now.getTime() / RELATIVE_DATE_TTL_MS) : null;
   return JSON.stringify([table.id, dataVersions.get(table.id) ?? 0, table.fields, query.filter, query.sorts, query.groupBy ?? [], query.context.timeZone, clock]);
 }
@@ -80,7 +80,7 @@ function sumsOf(values: unknown[][], numericCount: number): Aggregates[string][]
   });
 }
 
-function computeResultSet(tableId: string, fields: Field[], query: RowQuery): ResultSet {
+function computeResultSet(tableId: string, fields: Field[], query: Omit<RowQuery, "offset" | "limit">): ResultSet {
   const groupFields = (query.groupBy ?? []).flatMap((id) => fields.filter((field) => field.id === id));
   const where = compileFilter(query.filter, fields, query.context);
   // Groups come first in the order, so each group's rows are contiguous; the view's sorts order rows within a group.
@@ -125,25 +125,36 @@ function computeResultSet(tableId: string, fields: Field[], query: RowQuery): Re
   return { ids: records.map((record) => record.id as string), aggregates: aggregatesOf(0, records.length), groups };
 }
 
-/**
- * One window of rows for the virtualized grid, plus the total and aggregates for the
- * whole filtered set. Filtering and sorting happen in SQLite, never on the client.
- */
-export function queryRows(table: Pick<TableMeta, "id" | "fields">, query: RowQuery): RowWindow {
-  const tableId = table.id;
+function resultSetFor(table: Pick<TableMeta, "id" | "fields">, query: Omit<RowQuery, "offset" | "limit">): ResultSet {
   const key = cacheKey(table, query);
   let resultSet = resultCache.get(key);
   if (resultSet) {
     resultCache.delete(key); // re-insert to mark as most recently used
   } else {
-    resultSet = computeResultSet(tableId, table.fields, query);
+    resultSet = computeResultSet(table.id, table.fields, query);
     if (resultCache.size >= MAX_CACHED_RESULTS) resultCache.delete(resultCache.keys().next().value!);
   }
   resultCache.set(key, resultSet);
+  return resultSet;
+}
 
+/**
+ * Every row id of a query, in order: a snapshot for the CSV export, which then reads
+ * the rows in chunks. Comes from the same cache as the grid's windows.
+ */
+export function queryRowIds(table: Pick<TableMeta, "id" | "fields">, query: Omit<RowQuery, "offset" | "limit" | "withGroups">): readonly string[] {
+  return resultSetFor(table, query).ids;
+}
+
+/**
+ * One window of rows for the virtualized grid, plus the total and aggregates for the
+ * whole filtered set. Filtering and sorting happen in SQLite, never on the client.
+ */
+export function queryRows(table: Pick<TableMeta, "id" | "fields">, query: RowQuery): RowWindow {
+  const resultSet = resultSetFor(table, query);
   const ids = resultSet.ids.slice(query.offset, query.offset + query.limit);
   return {
-    rows: getRowsByIds(tableId, ids),
+    rows: getRowsByIds(table.id, ids),
     total: resultSet.ids.length,
     aggregates: resultSet.aggregates,
     ...(query.withGroups && (query.groupBy?.length ?? 0) > 0 ? { groups: resultSet.groups } : {}),

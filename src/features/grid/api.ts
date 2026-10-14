@@ -68,6 +68,31 @@ export function fetchRowWindow(tableId: string, query: RowQuery, offset: number,
   return request<RowWindowResponse>(`/api/tables/${tableId}/rows?${params}`, { signal });
 }
 
+/**
+ * The CSV export of what's on screen: the view's columns, with the current (possibly
+ * unsaved) filter, sorts and grouping. The browser downloads it as a stream.
+ */
+export function exportCsvUrl(tableId: string, viewId: string, query: RowQuery): string {
+  const params = new URLSearchParams({
+    viewId,
+    filter: encodeFilterParam(query.filter),
+    sort: encodeSortParam(query.sorts),
+    group: (query.groupBy ?? []).join(","),
+    tz: query.timeZone,
+  });
+  return `/api/tables/${tableId}/export?${params}`;
+}
+
+/** Starts a download without leaving the page (the response is an attachment). */
+export function download(url: string): void {
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "";
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
 export async function sendRowBatch(tableId: string, ops: RowOp[]): Promise<RowOpResult[]> {
   const { results } = await request<{ results: RowOpResult[] }>(`/api/tables/${tableId}/rows/batch`, {
     method: "POST",

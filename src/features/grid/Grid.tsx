@@ -15,7 +15,7 @@ import { FieldDialog, type BaseTable } from "@/features/fields/FieldDialog";
 import { RecordPanel, type RecordTab } from "@/features/records/RecordPanel";
 import { useOpenRecord } from "@/features/records/useOpenRecord";
 import { ViewPanel } from "@/features/view-panel/ViewPanel";
-import { fetchRowWindow, sendRowBatch } from "./api";
+import { download, exportCsvUrl, fetchRowWindow, sendRowBatch } from "./api";
 import { CellMenu } from "./CellMenu";
 import { GridFooter } from "./GridFooter";
 import { GridHeader } from "./GridHeader";
@@ -312,6 +312,7 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
         onAddField={canChangeSchema ? () => setFieldDialog({ mode: "create" }) : null}
         importHref={importHref}
         onAddRow={addRow}
+        onExport={() => download(exportCsvUrl(tableId, view.id, store.query))}
         onToggleHidden={(fieldId, hidden) => viewLayout.update((layout) => setFieldHidden(layout, fieldId, hidden))}
       />
       <ViewPanel

@@ -24,13 +24,14 @@ type GridToolbarProps = {
   /** Set for creators: the table's CSV import page. */
   importHref: string | null;
   onAddRow: () => void;
+  onExport: () => void;
   onToggleHidden: (fieldId: string, hidden: boolean) => void;
 };
 
 const buttonClass = "rounded px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:text-zinc-200 dark:hover:bg-zinc-800";
 
 /** Actions above the grid: add a record, show/hide fields, delete the selected records. */
-export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFieldIds, layoutError, panelOpen, panelStatus, realtimeStatus, onTogglePanel, onAddField, importHref, onAddRow, onToggleHidden }: GridToolbarProps) {
+export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFieldIds, layoutError, panelOpen, panelStatus, realtimeStatus, onTogglePanel, onAddField, importHref, onAddRow, onExport, onToggleHidden }: GridToolbarProps) {
   const selectedRows = useGridStore(store, (state) => state.getSelectedRowsKey());
   const pasteExtraRows = useGridStore(store, (state) => state.pastePrompt?.extraRows ?? 0);
   const [confirming, setConfirming] = useState(false);
@@ -71,6 +72,9 @@ export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFiel
           Import CSV
         </Link>
       )}
+      <button type="button" className={buttonClass} title="Download the records of this view, as filtered and sorted now" onClick={onExport}>
+        Export CSV
+      </button>
       <button type="button" className={`${buttonClass} ${panelOpen ? "bg-zinc-100 dark:bg-zinc-800" : ""}`} aria-expanded={panelOpen} onClick={onTogglePanel}>
         Filter &amp; sort{panelStatus.active > 0 ? ` · ${panelStatus.active}` : ""}
         {panelStatus.dirty && <span aria-label="unsaved changes" className="ml-1 inline-block size-1.5 rounded-full bg-amber-500 align-middle" />}

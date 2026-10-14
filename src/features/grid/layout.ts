@@ -1,5 +1,5 @@
 import type { Field } from "@/lib/domain/field";
-import { MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH, type RowHeight, type View } from "@/lib/domain/view";
+import { MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH, visibleFields, type RowHeight, type View } from "@/lib/domain/view";
 
 export const HEADER_HEIGHT = 34;
 export const FOOTER_HEIGHT = 32;
@@ -33,14 +33,10 @@ function defaultWidth(field: Field): number {
  * after it was saved), minus hidden fields.
  */
 export function gridColumns(fields: Field[], primaryFieldId: string, view: Pick<View, "fieldOrder" | "hiddenFieldIds" | "columnWidths">): GridColumn[] {
-  const byId = new Map(fields.map((field) => [field.id, field]));
-  const ordered = [...view.fieldOrder.filter((id) => byId.has(id)), ...fields.map((field) => field.id).filter((id) => !view.fieldOrder.includes(id))];
-  const hidden = new Set(view.hiddenFieldIds);
-  const ids = [primaryFieldId, ...ordered.filter((id) => id !== primaryFieldId && !hidden.has(id))];
-  return ids.flatMap((id) => {
-    const field = byId.get(id);
-    return field ? [{ field, width: view.columnWidths[id] ?? (id === primaryFieldId ? 220 : defaultWidth(field)) }] : [];
-  });
+  return visibleFields(fields, primaryFieldId, view).map((field) => ({
+    field,
+    width: view.columnWidths[field.id] ?? (field.id === primaryFieldId ? 220 : defaultWidth(field)),
+  }));
 }
 
 /** The parts of a view the grid changes directly (saved at once, without the view panel's save/reset). */

@@ -50,6 +50,18 @@ export type ViewQuery = z.infer<typeof viewQuerySchema>;
 export const viewConfigSchema = viewSchema.pick({ filter: true, sorts: true, groupBy: true, hiddenFieldIds: true });
 export type ViewConfig = z.infer<typeof viewConfigSchema>;
 
+/**
+ * The fields a view shows, in its order: the primary field first, then the listed ones,
+ * then fields added since the view was saved; hidden ones left out. The grid's columns,
+ * kanban cards and the CSV export all show this.
+ */
+export function visibleFields(fields: Field[], primaryFieldId: string, view: Pick<View, "fieldOrder" | "hiddenFieldIds">): Field[] {
+  const byId = new Map(fields.map((field) => [field.id, field]));
+  const ordered = [...view.fieldOrder.filter((id) => byId.has(id)), ...fields.map((field) => field.id).filter((id) => !view.fieldOrder.includes(id))];
+  const hidden = new Set(view.hiddenFieldIds);
+  return [primaryFieldId, ...ordered.filter((id) => id !== primaryFieldId && !hidden.has(id))].flatMap((id) => byId.get(id) ?? []);
+}
+
 /** Array-valued fields have no natural order, so they can't be sorted. */
 export function isSortable(field: Field): boolean {
   return field.type !== "link" && field.type !== "multiSelect" && field.type !== "lookup";
