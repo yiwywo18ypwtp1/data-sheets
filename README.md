@@ -71,6 +71,7 @@ npm run lint
 ### Fields and formulas (as a creator)
 
 - "+ Add field" → Formula. Type `{Total} - {Prise}`: you get `Unknown field "Prise" at 10` with the spot underlined. Fix it: the result type and a preview on 5 rows appear.
+- The formula is highlighted as you type (fields, functions, strings, numbers; unknown fields in red). `{` suggests fields, letters suggest functions: ↑/↓, Enter or Tab to insert.
 - Save it as **Net** = `ROUND({Total} * 0.8, 2)`, then edit **Total** to `{Net} + 1`: `Circular reference: Total → Net → Total`.
 - Rename **Qty**: Subtotal still works. Delete **Shipping**: the dialog lists Total as dependent; "Delete anyway", and Total shows `#REF!`.
 - Change a field's type (column menu → Edit field): the dialog shows how many values convert and which become empty, with examples, before "Convert field". Text → single select creates the options from the values. Date ↔ date-time, one link instead of several and removing select options convert the same way. Changing a link's table isn't supported.
@@ -108,10 +109,10 @@ npm run lint
 
 Planned in this order, with the reason each one waits:
 
-3. **Grouping, fill handle, undo of row deletion (2.1 Advanced).** Grouping needs group headers in the virtual row model (`[header, rows…]` index mapping).
-5. **Formula editor highlighting and autocomplete; import resume after reload and link columns (2.4 Advanced).** Resume needs the import id and progress in `sessionStorage`, plus the stored batch keys the server already keeps.
-6. **Public form `/f/[viewId]` (2.5).**
-7. **RTL and Playwright tests.** The pure logic is unit-tested (formulas, coercion, filters, mapping, the grid store, undo, selection, the API). The UI flows were checked with ad-hoc Playwright scripts, not committed tests.
+1. **Grouping, fill handle, undo of row deletion (2.1 Advanced).** Grouping needs group headers in the virtual row model (`[header, rows…]` index mapping).
+2. **Import resume after reload and link columns (2.4 Advanced).** Resume needs the import id and progress in `sessionStorage`, plus the stored batch keys the server already keeps.
+3. **Public form `/f/[viewId]` (2.5).**
+4. **RTL and Playwright tests.** The pure logic is unit-tested (formulas, coercion, filters, mapping, the grid store, undo, selection, the API). The UI flows were checked with ad-hoc Playwright scripts, not committed tests.
 
 Known limitations:
 - Footer sums update on the next window load, not on every edit.

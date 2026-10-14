@@ -5,7 +5,8 @@ import type { Row } from "@/lib/domain/row";
 import { createCellFormatter } from "@/lib/format";
 import { FUNCTIONS } from "@/lib/formula/functions";
 import { checkFormula, type FormulaCheck } from "./api";
-import { ErrorText, inputClass, labelClass } from "./Dialog";
+import { ErrorText, labelClass } from "./Dialog";
+import { FormulaInput } from "./FormulaInput";
 import { FormulaSyntaxError, previewFormula } from "./fieldForm";
 
 const CHECK_DELAY_MS = 300;
@@ -33,7 +34,7 @@ type Problem = { message: string; position: number };
  * The inferred result type is written into the form, so the field is saved with it.
  */
 export function FormulaEditor({ tableId, fieldId, fields, previewRows, locale, timeZone }: FormulaEditorProps) {
-  const { register, setValue, control, formState } = useFormContext<Field>();
+  const { setValue, control, formState } = useFormContext<Field>();
   const expression = (useWatch({ control, name: "expression" }) as string | undefined) ?? "";
   const [serverCheck, setServerCheck] = useState<{ expression: string; result: FormulaCheck } | null>(null);
 
@@ -76,18 +77,10 @@ export function FormulaEditor({ tableId, fieldId, fields, previewRows, locale, t
 
   return (
     <div className="flex flex-col gap-3">
-      <label className={labelClass}>
-        Formula
-        <textarea
-          {...register("expression")}
-          rows={3}
-          spellCheck={false}
-          aria-invalid={problem !== null || expressionError !== undefined}
-          aria-describedby="formula-problem"
-          placeholder='IF({Status} = "Done", {Price} * {Qty}, 0)'
-          className={`${inputClass} h-auto py-1.5 font-mono`}
-        />
-      </label>
+      <div className={labelClass}>
+        <span id="formula-label">Formula</span>
+        <FormulaInput fields={fields.filter((candidate) => candidate.id !== fieldId)} invalid={problem !== null || expressionError !== undefined} describedBy="formula-problem" />
+      </div>
       <div id="formula-problem" aria-live="polite" className="flex flex-col gap-1">
         {problem && (
           <>
