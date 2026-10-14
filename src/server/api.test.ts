@@ -200,6 +200,30 @@ describe("fields", () => {
   it("refuses to delete the primary field", async () => {
     expect((await deleteField("fld_o_number", "?force=1")).status).toBe(400);
   });
+
+  it("keeps field ids unique across the whole base", async () => {
+    expect((await createField({ id: "fld_c_name", name: "Borrowed id", type: "text" })).status).toBe(409);
+  });
+
+  it("refuses setting changes that would leave stored values in the wrong shape", async () => {
+    expect((await patchField("fld_o_customer", { targetTableId: "tbl_products" })).status).toBe(400);
+    expect((await patchField("fld_o_due", { includeTime: true })).status).toBe(400);
+    const created = await createField({ name: "Extras", type: "link", targetTableId: "tbl_products", multiple: true });
+    const { field } = (await created.json()) as { field: { id: string } };
+    expect((await patchField(field.id, { multiple: false })).status).toBe(400);
+    expect((await patchField(field.id, { name: "Add-ons", multiple: true })).status).toBe(200);
+  });
+
+  it("doesn't let a lookup broken by a force-deleted link block later schema changes", async () => {
+    expect((await deleteField("fld_o_product", "?force=1")).status).toBe(204);
+    expect((await createField({ name: "After the link", type: "text" })).status).toBe(201);
+    expect((await patchField("fld_o_unit_price", { name: "Old unit price" })).status).toBe(200);
+    expect((await patchField("fld_o_total", { name: "Grand total" })).status).toBe(200); // reads the deleted Shipping
+    // A new problem is still reported, with the field it belongs to.
+    const duplicate = await patchField("fld_o_number", { name: "after the link" });
+    expect(duplicate.status).toBe(400);
+    expect(await duplicate.json()).toMatchObject({ error: { fieldErrors: { name: "A field with this name already exists" } } });
+  });
 });
 
 describe("PUT /api/views/:id", () => {

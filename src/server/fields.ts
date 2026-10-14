@@ -57,10 +57,15 @@ function cyclePath(baseId: string, field: Field): string[] | null {
  * infers the result type, then checks the field itself, the table (unique names,
  * lookup uses a link), cross-table references, and cycles.
  */
-function prepareField(table: Table, input: Record<string, unknown>): Field {
+function prepareField(table: Table, input: Record<string, unknown>, existing?: Field): Field {
   const candidate: Record<string, unknown> = { ...input };
+  // A formula or lookup that a deleted field broke (#REF!) can still be renamed while its definition stays as is.
+  const keepsFormula = existing?.type === "formula" && candidate.expression === toDisplayExpression(existing.expression, table.fields);
+  const keepsLookup = existing?.type === "lookup" && candidate.linkFieldId === existing.linkFieldId && candidate.targetFieldId === existing.targetFieldId;
 
-  if (candidate.type === "formula" && typeof candidate.expression === "string") {
+  if (keepsFormula) {
+    candidate.expression = existing.expression;
+  } else if (candidate.type === "formula" && typeof candidate.expression === "string") {
     try {
       // Names resolve against the table as it will be, so a renamed formula can't hide a self-reference.
       const fieldsForNames: Field[] = table.fields.filter((field) => field.id !== candidate.id);
@@ -82,19 +87,25 @@ function prepareField(table: Table, input: Record<string, unknown>): Field {
   const fields = table.fields.some((existing) => existing.id === field.id)
     ? table.fields.map((existing) => (existing.id === field.id ? field : existing))
     : [...table.fields, field];
-  const tableCheck = tableMetaSchema.safeParse({ ...table, fields });
-  if (!tableCheck.success) {
+  // Only problems this change introduces count. A lookup left broken by a force-deleted
+  // link field (it shows #REF!) must not block every later change to the table.
+  const issueKey = (issue: { path: PropertyKey[]; message: string }) => JSON.stringify([issue.path.map(String), issue.message]);
+  const existingIssues = new Set(tableMetaSchema.safeParse(table).error?.issues.map(issueKey));
+  const newIssues = (tableMetaSchema.safeParse({ ...table, fields }).error?.issues ?? []).filter((issue) => !existingIssues.has(issueKey(issue)));
+  if (newIssues.length > 0) {
     const index = fields.indexOf(field);
-    const own = tableCheck.error.issues.filter((issue) => issue.path[0] === "fields" && issue.path[1] === index);
-    const fieldErrors = zodFieldErrors(own.map((issue) => ({ ...issue, path: issue.path.slice(2) })));
-    throw validationError(own[0]?.message ?? tableCheck.error.issues[0].message, fieldErrors);
+    // A duplicate name is reported on whichever of the two fields comes second; it's still this field's name.
+    const fieldErrors = zodFieldErrors(
+      newIssues.map((issue) => ({ ...issue, path: issue.path[1] === index ? issue.path.slice(2) : [issue.path.at(-1) ?? "_"] })),
+    );
+    throw validationError(newIssues[0].message, fieldErrors);
   }
 
   const baseTables = getBaseSchema(table.baseId);
   if (field.type === "link" && !baseTables.some((candidateTable) => candidateTable.tableId === field.targetTableId)) {
     throw validationError("Linked table does not exist", { targetTableId: "Linked table does not exist" });
   }
-  if (field.type === "lookup") {
+  if (field.type === "lookup" && !keepsLookup) {
     const link = fields.find((candidateField) => candidateField.id === field.linkFieldId);
     const target = link?.type === "link" ? baseTables.find((candidateTable) => candidateTable.tableId === link.targetTableId) : undefined;
     if (!target?.fields.some((targetField) => targetField.id === field.targetFieldId)) {
@@ -116,14 +127,34 @@ function saveFields(table: Table, fields: Field[]): void {
 
 export function createField(tableId: string, input: Record<string, unknown>): Field {
   const table = requireTable(tableId);
-  const field = prepareField(table, { ...input, id: typeof input.id === "string" ? input.id : newId("fld") });
-  if (table.fields.some((existing) => existing.id === field.id)) {
+  const id = typeof input.id === "string" ? input.id : newId("fld");
+  // Field ids are unique across the base, not just the table: the dependency graph, formulas
+  // and batch writes look fields up by id in all tables at once.
+  if (getBaseSchema(table.baseId).some((other) => other.fields.some((existing) => existing.id === id))) {
     throw new ApiError("CONFLICT", 409, "A field with this id already exists");
   }
+  const field = prepareField(table, { ...input, id });
   saveFields(table, [...table.fields, field]);
   // Views show fields missing from `fieldOrder` at the end, so views don't need updating.
   if (isComputedField(field)) recomputeAllRows(table.baseId, [field.id]);
   return field;
+}
+
+/**
+ * Settings whose change would leave existing values in the wrong shape: links pointing into
+ * another table, several links in a single-link field, date-only values in a date-time field.
+ */
+function unconvertibleChange(existing: Field, input: Record<string, unknown>): { key: string; message: string } | null {
+  if (existing.type === "link") {
+    if (input.targetTableId !== undefined && input.targetTableId !== existing.targetTableId) {
+      return { key: "targetTableId", message: "Changing the linked table" };
+    }
+    if (existing.multiple && input.multiple === false) return { key: "multiple", message: "Limiting a link to one record" };
+  }
+  if (existing.type === "date" && input.includeTime !== undefined && input.includeTime !== existing.includeTime) {
+    return { key: "includeTime", message: "Switching between date and date with time" };
+  }
+  return null;
 }
 
 /** Core supports renaming and editing settings; changing the type (with conversion) is Advanced. */
@@ -134,10 +165,13 @@ export function updateField(tableId: string, fieldId: string, input: Record<stri
   if (input.type !== undefined && input.type !== existing.type) {
     throw validationError("Changing the field type isn't supported yet", { type: "Changing the type isn't supported yet" });
   }
+  // These settings change what stored values mean, so like a type change they'd need a conversion.
+  const unconvertible = unconvertibleChange(existing, input);
+  if (unconvertible) throw validationError(`${unconvertible.message} isn't supported yet`, { [unconvertible.key]: `${unconvertible.message} isn't supported yet` });
 
   // Unspecified properties keep their current value, so a rename can send just `{ name }`.
   const current = existing.type === "formula" ? { ...existing, expression: toDisplayExpression(existing.expression, table.fields) } : existing;
-  const field = prepareField(table, { ...current, ...input, id: fieldId, type: existing.type });
+  const field = prepareField(table, { ...current, ...input, id: fieldId, type: existing.type }, existing);
 
   if ((field.type === "singleSelect" || field.type === "multiSelect") && "options" in existing) {
     const kept = new Set(field.options.map((option) => option.id));
