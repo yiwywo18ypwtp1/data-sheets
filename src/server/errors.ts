@@ -1,4 +1,5 @@
 import "server-only";
+import type { ErrorBody as SharedErrorBody } from "@/lib/domain/api";
 
 export type ErrorCode =
   | "VALIDATION_ERROR"
@@ -10,10 +11,8 @@ export type ErrorCode =
   | "MOCK_FAILURE"
   | "INTERNAL";
 
-/** The API's single error format: `{ error: { code, message, fieldErrors?, details? } }`. */
-export type ErrorBody = {
-  error: { code: ErrorCode; message: string; fieldErrors?: Record<string, string>; details?: unknown };
-};
+/** The API's single error format, with the server's narrower set of codes. */
+export type ErrorBody = SharedErrorBody & { error: { code: ErrorCode } };
 
 /** Thrown by server code for expected failures; Route Handlers turn it into an `ErrorBody` response. */
 export class ApiError extends Error {

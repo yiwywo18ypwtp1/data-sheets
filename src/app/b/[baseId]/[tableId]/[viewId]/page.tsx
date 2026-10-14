@@ -1,6 +1,8 @@
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { hasRole } from "@/lib/domain/user";
+import { Grid } from "@/features/grid/Grid";
+import { BLOCK_SIZE } from "@/features/grid/GridStore";
 import { TableTabs } from "@/features/table-shell/TableTabs";
 import { ViewTabs } from "@/features/table-shell/ViewTabs";
 import { getCurrentUser } from "@/server/auth";
@@ -8,7 +10,8 @@ import { now } from "@/server/clock";
 import { linkedRecordLabels, queryRows } from "@/server/rows";
 import { getBase, getTable } from "@/server/tables";
 
-const INITIAL_WINDOW = 100;
+// Matches the grid store's block size, so the first block is complete.
+const INITIAL_WINDOW = BLOCK_SIZE;
 
 /**
  * Server Component: loads the shell data (base, table schema, view, user) and the
@@ -55,11 +58,16 @@ export default async function ViewPage({ params }: PageProps<"/b/[baseId]/[table
           </span>
         )}
       </div>
-      {/* Replaced by the virtualized grid in the next phase. */}
-      <section aria-label={`${table.name} records`} className="flex-1 p-4 text-sm text-zinc-500">
-        {initialWindow.total.toLocaleString("en-US")} records · {table.fields.length} fields · first window: {initialWindow.rows.length} rows,{" "}
-        {Object.keys(linkedLabels).length} linked labels
-      </section>
+      {/* Keyed by view: switching views starts a fresh grid store instead of patching the old one. */}
+      <Grid
+        key={view.id}
+        tableId={table.id}
+        tableName={table.name}
+        fields={table.fields}
+        primaryFieldId={table.primaryFieldId}
+        view={view}
+        initialWindow={{ ...initialWindow, offset: 0, linkedLabels }}
+      />
     </div>
   );
 }

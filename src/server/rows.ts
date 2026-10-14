@@ -1,4 +1,5 @@
 import "server-only";
+import type { Aggregates, RowWindow } from "@/lib/domain/api";
 import type { Field } from "@/lib/domain/field";
 import type { FilterGroup } from "@/lib/domain/filter";
 import type { Row } from "@/lib/domain/row";
@@ -7,11 +8,6 @@ import type { Sort } from "@/lib/domain/view";
 import { getDb } from "./db";
 import { compileFilter, compileSorts, type QueryContext } from "./filterSql";
 import { toRow, type RowRecord } from "./storage";
-
-/** Footer aggregates for numeric columns, over all rows matching the filter (not just the window). */
-export type Aggregates = Record<string, { sum: number; avg: number | null }>;
-
-export type RowWindow = { rows: Row[]; total: number; aggregates: Aggregates };
 
 function isNumeric(field: Field): boolean {
   return field.type === "number" || field.type === "currency" || (field.type === "formula" && field.resultType === "number");
