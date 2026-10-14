@@ -58,9 +58,14 @@ The result cache and the data versions live on `globalThis`. Next.js bundles rou
 - **Field dialog.** RHF over the `Field` discriminated union with the shared field schema plus unique names. Changing the type resets the form to that type's defaults. Server errors land on the form fields they name.
 - **Import.** Step 2 is a `useFieldArray` over the CSV columns, each a union (`skip | existing | new`). Step 3 builds a **zod object at runtime** from the mapping, one `string → value` transform per target field using the paste/editor coercer, and runs every row through it in chunks.
 
-## Concurrency (Core)
+## Realtime and conflicts
 
-Writes are last-write-wins **per cell**: an update op carries only the cells it changes, so two users editing different cells of a row both keep their edits. `rev` is returned with every row. The conflict toast, realtime and presence are Advanced and not built (see README).
+- **Event log.** Every committed change is appended to an `events` table with a per-table sequence number: rows (with the cells written directly, plus creates and deletes), schema, view saves and bulk recomputes. Row writes and view saves log their event in the same transaction as the change.
+- **Stream.** `GET /api/tables/:id/events` is SSE with the sequence number as the event id. The client keeps the last number it saw. A jump in the numbers, a heartbeat `tick` carrying a newer number, or a dropped connection makes it reconnect with `?since=<last>`, and the server replays the missing events from the log. If the log was pruned past that point, a `reset` tells the client to refetch instead. `REALTIME_DROP_RATE` drops live events to exercise this path.
+- **Applying events.** A tab skips events caused by its own writes (`x-client-id`). Changed rows that are loaded are replaced in place, with this tab's unsent edits re-applied on top. Added or deleted rows shift positions, so the loaded windows are refetched in the background (coalesced, keeping the selection). A schema event refreshes the page, which remounts the grid; it explains when that closed the user's editor, field dialog or unsaved filter. A view event moves the saved baseline of the view panel.
+- **Conflicts.** Writes are last-write-wins **per cell**: an op carries only the cells it changes, so edits of different cells of one row merge. Each tab remembers the value and row `rev` of its last confirmed write per cell. If an event later brings a newer `rev` with a different value in that cell, this tab lost: it shows a toast with both values and "Keep mine", which writes its value again.
+- **Offline.** A batch that gets no answer, or a 5xx, stays queued in order with its edits still shown, and is resent with backoff (and at once on the browser's `online` event). The toolbar shows "Offline · N changes waiting". Only an answer that rejects an op rolls that op back.
+- **Presence.** Each tab posts its active cell (debounced, plus a 20 s heartbeat). Presence is kept in memory per table, pushed on the same stream, and removed when the tab's stream closes. Others show as avatars and as a frame in their colour.
 
 ## Performance: how it was measured
 

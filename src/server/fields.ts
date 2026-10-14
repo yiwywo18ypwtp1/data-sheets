@@ -9,7 +9,8 @@ import { FormulaSyntaxError } from "@/lib/formula/lexer";
 import { fieldByNameResolver, toDisplayExpression, toStoredExpression } from "@/lib/formula/references";
 import { getDb } from "./db";
 import { ApiError, notFound, zodFieldErrors } from "./errors";
-import { recomputeAllRows } from "./rowWrites";
+import { appendEvent, type Origin } from "./events";
+import { recomputeAllRows, SYSTEM_ORIGIN } from "./rowWrites";
 import { getBaseSchema, getTable } from "./tables";
 
 /**
@@ -125,7 +126,15 @@ function saveFields(table: Table, fields: Field[]): void {
   getDb().prepare("UPDATE tables SET fields = ?, version = version + 1 WHERE id = ?").run(JSON.stringify(fields), table.id);
 }
 
-export function createField(tableId: string, input: Record<string, unknown>): Field {
+/** Tells open grids: this table's fields changed; other tables only had values recomputed. */
+function announceSchemaChange(tableId: string, recomputed: string[], origin: Origin, deletedFieldId?: string) {
+  getDb().transaction(() => {
+    appendEvent(tableId, { kind: "schema", origin, ...(deletedFieldId ? { deletedFieldId } : {}) });
+    for (const other of recomputed) if (other !== tableId) appendEvent(other, { kind: "reload", origin });
+  })();
+}
+
+export function createField(tableId: string, input: Record<string, unknown>, origin: Origin = SYSTEM_ORIGIN): Field {
   const table = requireTable(tableId);
   const id = typeof input.id === "string" ? input.id : newId("fld");
   // Field ids are unique across the base, not just the table: the dependency graph, formulas
@@ -136,7 +145,7 @@ export function createField(tableId: string, input: Record<string, unknown>): Fi
   const field = prepareField(table, { ...input, id });
   saveFields(table, [...table.fields, field]);
   // Views show fields missing from `fieldOrder` at the end, so views don't need updating.
-  if (isComputedField(field)) recomputeAllRows(table.baseId, [field.id]);
+  announceSchemaChange(table.id, isComputedField(field) ? recomputeAllRows(table.baseId, [field.id]) : [], origin);
   return field;
 }
 
@@ -158,7 +167,7 @@ function unconvertibleChange(existing: Field, input: Record<string, unknown>): {
 }
 
 /** Core supports renaming and editing settings; changing the type (with conversion) is Advanced. */
-export function updateField(tableId: string, fieldId: string, input: Record<string, unknown>): Field {
+export function updateField(tableId: string, fieldId: string, input: Record<string, unknown>, origin: Origin = SYSTEM_ORIGIN): Field {
   const table = requireTable(tableId);
   const existing = table.fields.find((field) => field.id === fieldId);
   if (!existing) throw notFound("Field");
@@ -184,7 +193,7 @@ export function updateField(tableId: string, fieldId: string, input: Record<stri
   saveFields(table, table.fields.map((candidate) => (candidate.id === fieldId ? field : candidate)));
   const definitionChanged =
     isComputedField(field) && JSON.stringify({ ...field, name: "" }) !== JSON.stringify({ ...existing, name: "" });
-  if (definitionChanged) recomputeAllRows(table.baseId, [field.id]);
+  announceSchemaChange(table.id, definitionChanged ? recomputeAllRows(table.baseId, [field.id]) : [], origin);
   return field;
 }
 
@@ -224,7 +233,7 @@ function viewWithoutField(view: View, fieldId: string): View {
  * deleted: the caller gets 409 with the list, to confirm. After deletion those
  * formulas evaluate to `#REF!` instead of failing.
  */
-export function deleteField(tableId: string, fieldId: string, force: boolean): void {
+export function deleteField(tableId: string, fieldId: string, force: boolean, origin: Origin = SYSTEM_ORIGIN): void {
   const table = requireTable(tableId);
   if (!table.fields.some((field) => field.id === fieldId)) throw notFound("Field");
   if (table.primaryFieldId === fieldId) {
@@ -243,7 +252,7 @@ export function deleteField(tableId: string, fieldId: string, force: boolean): v
     for (const view of table.views) updateView.run(JSON.stringify(viewWithoutField(view, fieldId)), view.id);
     db.prepare("UPDATE rows SET cells = json_remove(cells, ?) WHERE table_id = ?").run(`$."${fieldId}"`, tableId);
   })();
-  recomputeAllRows(table.baseId, [fieldId]);
+  announceSchemaChange(table.id, recomputeAllRows(table.baseId, [fieldId]), origin, fieldId);
 }
 
 export type FormulaCheck =

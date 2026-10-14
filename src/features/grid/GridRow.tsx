@@ -67,11 +67,16 @@ export const GridRow = memo(function GridRow({ store, idPrefix, index, top, heig
   const status = useGridStore(store, (state) => state.getRowStatus(index));
   const selection = parseRowSelectionKey(useGridStore(store, (state) => state.getRowSelectionKey(index)));
   const editingCol = useGridStore(store, (state) => state.getEditingCol(index));
+  const presenceKey = useGridStore(store, (state) => state.getPresenceKey(row?.id));
+  const presence = presenceKey ? presenceKey.split(";").map((entry) => entry.split("|")) : [];
 
   const cell = (column: GridColumn, col: number, className: string, style: CSSProperties) => {
     const { selected, style: selectedStyle } = selectionStyle(selection, col);
     const saveError = row?.saveErrors?.[column.field.id];
     const editing = row !== undefined && col === editingCol;
+    // Another user's selected cell: a frame in their colour (under this tab's own frame).
+    const other = presence.find(([fieldId]) => fieldId === column.field.id);
+    const otherStyle: CSSProperties = other && !selected ? { boxShadow: `inset 0 0 0 2px ${other[1]}` } : {};
     return (
       <div
         key={column.field.id}
@@ -80,12 +85,12 @@ export const GridRow = memo(function GridRow({ store, idPrefix, index, top, heig
         aria-colindex={col + 1}
         aria-selected={selected}
         aria-invalid={saveError ? true : undefined}
-        title={saveError}
+        title={saveError ?? (other ? `${other[2]} is here` : undefined)}
         data-row={index}
         data-col={col}
         className={`${cellClass} ${className}`}
         // A cell whose save failed keeps a red frame (over the selection's) until it's edited again.
-        style={{ ...style, ...selectedStyle, ...(saveError ? { boxShadow: `inset 0 0 0 2px ${ERROR_COLOR}` } : {}) }}
+        style={{ ...style, ...otherStyle, ...selectedStyle, ...(saveError ? { boxShadow: `inset 0 0 0 2px ${ERROR_COLOR}` } : {}) }}
       >
         {editing ? (
           <CellEditor field={column.field} value={row.values[column.field.id]} initialText={store.editing?.initialText ?? null} />

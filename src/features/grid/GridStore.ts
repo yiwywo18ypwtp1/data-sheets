@@ -7,6 +7,7 @@ import { MAX_BATCH_OPS, type Row, type RowOp, type RowOpResult } from "@/lib/dom
 import type { RowQuery } from "./api";
 import { History, type HistoryChange, type HistoryEntry } from "./history";
 import { buildFormulaContext, displayRow, type DisplayRow, type FormulaContext, type PendingEdit } from "./optimistic";
+import type { PresenceEntry, RowChange } from "./realtime";
 import { rangeOf, rowSelectionKey, type Selection } from "./selection";
 
 /**
@@ -29,6 +30,17 @@ export const BLOCK_SIZE = 100;
 export const MAX_BLOCKS = 12;
 /** Waits for scrolling to settle a little, so dragging the scrollbar doesn't request every block it passes. */
 export const FETCH_DELAY_MS = 50;
+/** Remote row additions and deletions are coalesced this long before the windows are refetched. */
+export const REFRESH_DELAY_MS = 150;
+
+/** Another user's write overwrote this tab's value of a cell. */
+export type Conflict = { rowId: string; fieldId: string; mine: CellValue; theirs: CellValue; by: string };
+
+/** A failure worth retrying: no answer at all, or a server error (5xx). A 4xx is the server saying no. */
+function isTransient(error: unknown): boolean {
+  const status = error && typeof error === "object" && "status" in error ? Number((error as { status: unknown }).status) : null;
+  return status === null || status >= 500;
+}
 
 export type FetchWindow = (query: RowQuery, offset: number, limit: number, signal: AbortSignal) => Promise<RowWindowResponse>;
 export type SendBatch = (ops: RowOp[]) => Promise<RowOpResult[]>;
@@ -79,6 +91,16 @@ export class GridStore {
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private nextOpId = 1;
   private readonly history = new History();
+  /**
+   * The value and row revision of this tab's last confirmed write per cell. A remote change
+   * of the same cell with a newer revision means someone else's write won: a conflict.
+   */
+  private confirmed = new Map<string, { value: CellValue; rev: number; at: number }>();
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryDelay = 0;
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Other tabs' selected cells, by row id. */
+  private presenceByRow = new Map<string, { fieldId: string; color: string; name: string }[]>();
 
   query: RowQuery;
   /** Rows in the server's filtered result. */
@@ -97,6 +119,10 @@ export class GridStore {
   /** Latest message for the screen-reader live region; `announcementId` changes even if the text repeats. */
   announcement = "";
   announcementId = 0;
+  /** Whether writes reach the server; "offline" while a failed batch waits to be sent again. */
+  connection: "online" | "offline" = "online";
+  /** Other people on this table (one entry per user), for the avatars. */
+  others: PresenceEntry[] = [];
   /** A paste waiting for the user to decide about extra rows (shown by the toolbar). */
   pastePrompt: { extraRows: number; answer: (choice: PasteChoice) => void } | null = null;
 
@@ -355,10 +381,17 @@ export class GridStore {
     try {
       results = await this.sendBatch(batch.map((edit) => this.toRowOp(edit)));
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Network error";
-      results = batch.map((edit) => ({ ok: false, rowId: edit.rowId, error: { code: "NETWORK", message: `Not saved: ${message}` } }));
+      this.inFlight = false;
+      if (isTransient(error)) return this.waitAndResend(batch);
+      const message = error instanceof Error ? error.message : "Request failed";
+      results = batch.map((edit) => ({ ok: false, rowId: edit.rowId, error: { code: "REQUEST_FAILED", message: `Not saved: ${message}` } }));
     }
     this.inFlight = false;
+    if (this.connection === "offline") {
+      this.connection = "online";
+      this.retryDelay = 0;
+      this.announce("Back online: waiting changes were saved");
+    }
 
     batch.forEach((edit, i) => this.settle(edit, results[i]));
     // Failed creates announce themselves in `settle`; this counts edits and deletes.
@@ -368,6 +401,32 @@ export class GridStore {
     if (batch.some((edit, i) => edit.op === "delete" && results[i]?.ok)) this.reload();
     this.notify();
     if (this.queue.length > 0) void this.flush();
+  }
+
+  /**
+   * The batch didn't reach the server (offline, a 5xx): its edits stay applied and queued,
+   * in front of anything edited since, and are sent again with growing pauses. Nothing
+   * is rolled back for a network problem; only the server rejecting an edit rolls it back.
+   */
+  private waitAndResend(batch: PendingEdit[]) {
+    this.queue.unshift(...batch);
+    if (this.connection === "online") this.announce("Connection lost: changes are kept and will be sent when it's back");
+    this.connection = "offline";
+    this.retryDelay = Math.min(30_000, Math.max(1000, this.retryDelay * 2));
+    this.retryTimer = setTimeout(() => this.resendNow(), this.retryDelay);
+    this.notify();
+  }
+
+  /** Sends waiting edits at once (the browser reports it's online again). */
+  resendNow(): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    void this.flush();
+  }
+
+  /** Edits not yet confirmed by the server, for the connection indicator. */
+  get unsentCount(): number {
+    return this.queue.length;
   }
 
   private toRowOp(edit: PendingEdit): RowOp {
@@ -385,6 +444,9 @@ export class GridStore {
     if (result?.ok) {
       // Only rows the grid holds are updated: a paste into 10 000 unloaded rows must not keep them all.
       if (result.row && this.rows.has(result.row.id)) this.rows.set(result.row.id, result.row);
+      if (edit.op === "update" && result.row) {
+        for (const [fieldId, value] of Object.entries(edit.values)) this.confirmed.set(`${edit.rowId}:${fieldId}`, { value, rev: result.row.rev, at: Date.now() });
+      }
       if (edit.op === "delete") this.forgetRow(edit.rowId);
     } else if (edit.op === "create") {
       // The record doesn't exist on the server, so it disappears (with any edits made to it meanwhile).
@@ -414,6 +476,95 @@ export class GridStore {
     const errors = this.saveErrors.get(rowId);
     if (!base || (edits.length === 0 && !errors)) this.display.delete(rowId);
     else this.display.set(rowId, displayRow(base, edits, errors, this.formulas, new Date()));
+  }
+
+  // ---- changes from other users -------------------------------------------------
+
+  /**
+   * Applies another tab's row changes. Loaded rows are replaced in place (edits still
+   * waiting here are re-applied on top, so they aren't lost); rows that were added or
+   * deleted shift positions, so the loaded windows are fetched again in the background.
+   * Returns what the grid has to tell the user about.
+   */
+  applyRemoteRows(changes: RowChange[], deleted: string[], by: string): { conflicts: Conflict[]; deletedWhileEditing: boolean } {
+    const conflicts: Conflict[] = [];
+    let structural = deleted.length > 0;
+    for (const { row, fields, created } of changes) {
+      if (created) structural = true;
+      for (const fieldId of fields) {
+        const key = `${row.id}:${fieldId}`;
+        const mine = this.confirmed.get(key);
+        if (!mine || row.rev <= mine.rev) continue;
+        this.confirmed.delete(key);
+        const theirs = row.values[fieldId] ?? null;
+        if (JSON.stringify(theirs) !== JSON.stringify(mine.value)) conflicts.push({ rowId: row.id, fieldId, mine: mine.value, theirs, by });
+      }
+      const current = this.rows.get(row.id);
+      // An older revision than the one held (events and batch answers can cross): keep the newer.
+      if (current && current.rev < row.rev) {
+        this.rows.set(row.id, row);
+        this.refreshRow(row.id);
+      }
+    }
+
+    const editingRowId = this.editing ? this.rowIdAt(this.editing.row) : undefined;
+    const deletedWhileEditing = editingRowId !== undefined && deleted.includes(editingRowId);
+    if (deletedWhileEditing) this.editing = null;
+    for (const rowId of deleted) {
+      if (!this.pending.has(rowId)) this.forgetRow(rowId);
+    }
+    if (structural) this.refresh();
+    this.notify();
+    return { conflicts, deletedWhileEditing };
+  }
+
+  /**
+   * Fetches the loaded windows again without dropping what's on screen or the selection:
+   * rows other people added or deleted moved everything after them. Bursts (an import
+   * running elsewhere) are coalesced.
+   */
+  refresh(): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      const generation = this.generation;
+      for (const [index, block] of this.blocks) {
+        if (block.status !== "ready") continue;
+        this.fetchWindow(this.query, index * BLOCK_SIZE, BLOCK_SIZE, new AbortController().signal).then(
+          (response) => {
+            if (generation !== this.generation || this.blocks.get(index)?.status !== "ready") return;
+            this.applyWindow(index, response);
+            this.notify();
+          },
+          () => undefined,
+        );
+      }
+    }, REFRESH_DELAY_MS);
+  }
+
+  /** Other tabs' presence (this tab's own entry excluded by the caller). */
+  setPresence(entries: PresenceEntry[]): void {
+    this.presenceByRow.clear();
+    for (const entry of entries) {
+      if (!entry.cell) continue;
+      const list = this.presenceByRow.get(entry.cell.rowId) ?? [];
+      list.push({ fieldId: entry.cell.fieldId, color: entry.color, name: entry.name });
+      this.presenceByRow.set(entry.cell.rowId, list);
+    }
+    const byUser = new Map(entries.map((entry) => [entry.userId, entry]));
+    this.others = [...byUser.values()];
+    this.notify();
+  }
+
+  /** "fieldId|color|name;…" for one row: a primitive, so only rows whose presence changes re-render. */
+  getPresenceKey(rowId: string | undefined): string {
+    const list = rowId ? this.presenceByRow.get(rowId) : undefined;
+    return list ? list.map((entry) => `${entry.fieldId}|${entry.color}|${entry.name}`).join(";") : "";
+  }
+
+  /** The row id and field index of the active cell, for this tab's own presence. */
+  activeRowId(): string | undefined {
+    return this.selection ? this.rowIdAt(this.selection.anchor.row) : undefined;
   }
 
   // ---- loading windows ---------------------------------------------------------
@@ -477,6 +628,7 @@ export class GridStore {
    */
   dispose(): void {
     if (this.timer) clearTimeout(this.timer);
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.abortAll();
   }
 

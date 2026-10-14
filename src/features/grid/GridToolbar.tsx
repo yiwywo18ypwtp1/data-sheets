@@ -4,6 +4,7 @@ import type { Field } from "@/lib/domain/field";
 import { Popover } from "./editors/Popover";
 import { useOutsidePointerDown } from "./editors/useOutsidePointerDown";
 import type { GridStore } from "./GridStore";
+import type { RealtimeStatus } from "./realtime";
 import { useGridStore } from "./useGridStore";
 
 type GridToolbarProps = {
@@ -15,7 +16,8 @@ type GridToolbarProps = {
   layoutError: string | null;
   panelOpen: boolean;
   /** Unsaved changes in the view panel, and how many conditions and sorts are in effect. */
-  panelStatus: { dirty: boolean; active: number };
+  panelStatus: { dirty: boolean; active: number; fieldIds: string };
+  realtimeStatus: RealtimeStatus;
   onTogglePanel: () => void;
   /** Set for creators: opens the new-field dialog. */
   onAddField: (() => void) | null;
@@ -28,7 +30,7 @@ type GridToolbarProps = {
 const buttonClass = "rounded px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:text-zinc-200 dark:hover:bg-zinc-800";
 
 /** Actions above the grid: add a record, show/hide fields, delete the selected records. */
-export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFieldIds, layoutError, panelOpen, panelStatus, onTogglePanel, onAddField, importHref, onAddRow, onToggleHidden }: GridToolbarProps) {
+export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFieldIds, layoutError, panelOpen, panelStatus, realtimeStatus, onTogglePanel, onAddField, importHref, onAddRow, onToggleHidden }: GridToolbarProps) {
   const selectedRows = useGridStore(store, (state) => state.getSelectedRowsKey());
   const pasteExtraRows = useGridStore(store, (state) => state.pastePrompt?.extraRows ?? 0);
   const [confirming, setConfirming] = useState(false);
@@ -126,11 +128,49 @@ export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFiel
         </div>
       )}
 
-      {layoutError && (
-        <span role="alert" className="ml-auto text-xs text-red-600">
-          {layoutError}
-        </span>
-      )}
+      <div className="ml-auto flex items-center gap-3">
+        {layoutError && (
+          <span role="alert" className="text-xs text-red-600">
+            {layoutError}
+          </span>
+        )}
+        <Others store={store} />
+        <ConnectionStatus store={store} realtimeStatus={realtimeStatus} />
+      </div>
     </div>
+  );
+}
+
+/** Avatars of the other people on this table, in their presence colour. */
+function Others({ store }: { store: GridStore }) {
+  const key = useGridStore(store, (state) => state.others.map((entry) => `${entry.userId}|${entry.name}|${entry.color}`).join(";"));
+  if (!key) return null;
+  const others = key.split(";").map((entry) => entry.split("|"));
+  return (
+    <ul aria-label="Also here" className="flex -space-x-1.5">
+      {others.map(([userId, name, color]) => (
+        <li key={userId} title={name} className="flex size-6 items-center justify-center rounded-full text-[10px] font-semibold text-white ring-2 ring-white dark:ring-zinc-950" style={{ backgroundColor: color }}>
+          {name
+            .split(" ")
+            .map((part) => part[0])
+            .join("")
+            .slice(0, 2)}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Live / reconnecting, and edits waiting to be sent while the server can't be reached. */
+function ConnectionStatus({ store, realtimeStatus }: { store: GridStore; realtimeStatus: RealtimeStatus }) {
+  const connection = useGridStore(store, (state) => state.connection);
+  const unsent = useGridStore(store, (state) => state.unsentCount);
+  const offline = connection === "offline";
+  const live = realtimeStatus === "live" && !offline;
+  return (
+    <span role="status" className={`flex items-center gap-1.5 text-xs ${live ? "text-zinc-500" : "text-amber-700 dark:text-amber-400"}`}>
+      <span aria-hidden className={`size-2 rounded-full ${live ? "bg-green-500" : "animate-pulse bg-amber-500"}`} />
+      {offline ? `Offline · ${unsent.toLocaleString()} ${unsent === 1 ? "change" : "changes"} waiting` : realtimeStatus === "live" ? "Live" : realtimeStatus === "connecting" ? "Connecting…" : "Reconnecting…"}
+    </span>
   );
 }

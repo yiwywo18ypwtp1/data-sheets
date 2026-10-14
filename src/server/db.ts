@@ -48,6 +48,13 @@ const SCHEMA = `
     errors TEXT
   );
   CREATE INDEX IF NOT EXISTS rows_by_table ON rows(table_id, seq);
+  CREATE TABLE IF NOT EXISTS events (
+    table_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (table_id, seq)
+  );
   CREATE TABLE IF NOT EXISTS import_batches (
     key TEXT PRIMARY KEY,
     table_id TEXT NOT NULL REFERENCES tables(id),

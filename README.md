@@ -28,7 +28,7 @@ Users are switched on **/settings** (a cookie): Cora Creator (creator, the defau
 | `MOCK_LATENCY_MS` | `0` | Delay added to every `/api` request |
 | `MOCK_FAILURE_RATE` | `0` | Share (0–1) of `/api` requests that fail with 503 `MOCK_FAILURE` |
 | `MOCK_NOW` | real clock | Pins "now" for `TODAY()` and "today" filters (ISO date-time) |
-| `REALTIME_DROP_RATE` | — | Not used: realtime is not implemented |
+| `REALTIME_DROP_RATE` | `0` | Share (0–1) of live realtime events the server drops; clients notice the gap and get them replayed |
 
 ### Scripts
 
@@ -48,8 +48,17 @@ npm run lint
 - **Editors.** Number "1 234,5" (uk-UA locale), dates in the field's zone, select with search, link with record search. An invalid value keeps the editor open with the reason.
 - **Copy and paste.** Copy a range and paste it into Google Sheets, then back. Paste one column into a 5-column selection and it's repeated. Pasting past the last row offers to add rows. Values that can't be converted get a red frame and a tooltip; they are never emptied silently.
 - **Undo.** Cmd+Z undoes a whole paste in one step, Shift+Cmd+Z redoes it. Edit row 1, scroll to the end, press Cmd+Z: the edit is undone and the grid scrolls back to it.
-- **Failures.** Restart with `MOCK_FAILURE_RATE=0.5` and edit a few cells: failed cells roll back with a frame, the others keep their edits.
+- **Failures.** Restart with `MOCK_FAILURE_RATE=0.5` and edit a few cells: a batch that fails as a whole (503) stays queued and is sent again ("Offline · N changes waiting"). Cells the server rejects (e.g. a number over the field's max via the API) roll back with a red frame; the other cells keep their edits.
 - **Rows and columns.** "+ Add record"; select rows and delete them. Column menu (⋯): move, hide. Drag a header edge to resize. Order, widths and hidden fields are saved to the view at once.
+
+### Realtime: two tabs (or two users from /settings in two browsers)
+
+- Both tabs show "Live" and each other's avatar. Selecting a cell in one shows a frame in the other.
+- An edit in one tab appears in the other within about 100 ms. Edits of different cells of one row merge.
+- Edit the same cell in both, one after the other: the tab whose value was overwritten gets a toast with both values and "Keep mine".
+- Delete a record in one tab while the other is editing it: the editor closes with an explanation. Delete a field the other tab is filtering by: its draft resets with an explanation.
+- DevTools → Network → Offline, edit, back online: the edits are sent and reach the other tab.
+- `REALTIME_DROP_RATE=0.3 npm start`, then edit for a minute in both tabs: both end up showing the same values (gaps are detected and replayed, at the latest by the 5 s heartbeat).
 
 ### Views: "Filter & sort"
 
@@ -90,13 +99,14 @@ npm run lint
 | CSV in Windows-1251 with `;` and BOM; 20 MB | detected; parsed in a worker. Closing the tab mid-import keeps the rows already imported; resuming isn't in Core |
 | filter by a formula that uses a lookup, then edit the linked record | the server recomputes lookups and formulas of linking rows; the filter applies on the next load of the view |
 | scroll to the end, Cmd+Z | undoes the early edit and scrolls to it |
-| two tabs, realtime, `REALTIME_DROP_RATE`, public form | not implemented (Advanced) |
+| two tabs: one deletes a row the other is editing / a field the other filters by | the editor closes / the draft resets, each with an explanation |
+| `REALTIME_DROP_RATE=0.3`, a minute of edits | both tabs converge (checked: 60 edits from 2 tabs, identical to the server) |
+| public form | not implemented (Advanced) |
 
 ## Not done
 
 Planned in this order, with the reason each one waits:
 
-1. **Realtime and conflicts (2.6).** SSE `GET /api/tables/:id/events?since=` from an event log table written in the same transaction as each batch. The grid store applies remote row changes to loaded blocks. A `rev` mismatch on the same cell shows a toast with "keep mine". This also gives presence and the drop/replay test.
 2. **Field type change with preview (2.3).** `PATCH ?preview=1` runs the target coercer over all values (counts and examples), then converts in one transaction. The same goes for `includeTime` and link target changes, which are refused today.
 3. **Grouping, fill handle, undo of row deletion (2.1 Advanced).** Grouping needs group headers in the virtual row model (`[header, rows…]` index mapping).
 5. **Formula editor highlighting and autocomplete; import resume after reload and link columns (2.4 Advanced).** Resume needs the import id and progress in `sessionStorage`, plus the stored batch keys the server already keeps.

@@ -7,6 +7,8 @@ export type SavedView = {
   view: View;
   /** Saves part of the view: the column layout or the panel's filter and sorts. */
   save: (patch: Partial<View>) => Promise<View>;
+  /** Another user saved the view: later saves build on their version instead of hitting a 412. */
+  applyRemote: (view: View, version: number) => void;
 };
 
 /**
@@ -42,5 +44,11 @@ export function useSavedView(initialView: View, initialVersion: number): SavedVi
     return result;
   }
 
-  return { view, save };
+  function applyRemote(remote: View, version: number) {
+    if (version <= latest.current.version) return;
+    latest.current = { view: remote, version };
+    setView(remote);
+  }
+
+  return { view, save, applyRemote };
 }

@@ -5,6 +5,7 @@ import { idSchema, newId } from "@/lib/domain/ids";
 import { now } from "./clock";
 import { getDb } from "./db";
 import { ApiError } from "./errors";
+import type { Origin } from "./events";
 import { applyRowBatch } from "./rowWrites";
 
 /** Rows per import request; the client sends smaller batches when rows are wide. */
@@ -27,7 +28,7 @@ export type ImportBatchResult = {
  * a double click, a reload) returns the stored result instead of importing twice.
  * Each row is validated like any other write; a row that fails is reported, not fatal.
  */
-export function importBatch(table: { id: string; baseId: string }, key: string, rows: z.infer<typeof importRowsSchema>): ImportBatchResult {
+export function importBatch(table: { id: string; baseId: string }, key: string, rows: z.infer<typeof importRowsSchema>, origin?: Origin): ImportBatchResult {
   const db = getDb();
   return db.transaction(() => {
     const stored = db.prepare("SELECT table_id, result FROM import_batches WHERE key = ?").get(key) as { table_id: string; result: string } | undefined;
@@ -35,7 +36,7 @@ export function importBatch(table: { id: string; baseId: string }, key: string, 
       if (stored.table_id !== table.id) throw new ApiError("CONFLICT", 409, "This Idempotency-Key was used for another table");
       return JSON.parse(stored.result) as ImportBatchResult;
     }
-    const results = applyRowBatch(table, rows.map((values) => ({ op: "create", rowId: newId("row"), values })));
+    const results = applyRowBatch(table, rows.map((values) => ({ op: "create", rowId: newId("row"), values })), origin);
     const result: ImportBatchResult = {
       imported: results.filter((entry) => entry.ok).length,
       failed: results.flatMap((entry, index) => {

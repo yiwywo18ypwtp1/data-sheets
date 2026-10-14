@@ -5,6 +5,7 @@ import { isComputedField, type Field } from "@/lib/domain/field";
 import type { Row, RowOp, RowOpResult } from "@/lib/domain/row";
 import { buildDependencyGraph, dependentsOf, topologicalOrder, type DependencyGraph } from "@/lib/formula/graph";
 import { now } from "./clock";
+import { appendEvent, type Origin, type RowChange } from "./events";
 import { computeFields, FormulaCache, type ComputedResult, type LinkedValuesReader } from "./compute";
 import { getDb } from "./db";
 import { getRowsByIds, markRowsChanged } from "./rows";
@@ -24,8 +25,46 @@ class OpFailure extends Error {
 /** Rows touched in one table, and which of their fields changed. */
 type TableChanges = { rowIds: Set<string>; fieldIds: Set<string> };
 
+/** Changes a batch made, per table, for the realtime event log. */
+class ChangeLog {
+  private readonly touched = new Map<string, Map<string, { fields: Set<string>; created: boolean }>>();
+  private readonly deleted = new Map<string, Set<string>>();
+
+  /** `fields` are the cells written directly; recomputed cells don't count (no conflicts on them). */
+  touch(tableId: string, rowId: string, fields: Iterable<string>, created = false) {
+    if (!this.touched.has(tableId)) this.touched.set(tableId, new Map());
+    const rows = this.touched.get(tableId)!;
+    const entry = rows.get(rowId) ?? { fields: new Set<string>(), created };
+    for (const field of fields) entry.fields.add(field);
+    rows.set(rowId, entry);
+  }
+
+  remove(tableId: string, rowId: string) {
+    if (!this.deleted.has(tableId)) this.deleted.set(tableId, new Set());
+    this.deleted.get(tableId)!.add(rowId);
+    this.touched.get(tableId)?.delete(rowId);
+  }
+
+  /** One event per changed table, with the rows as they are at the end of the batch. */
+  emit(origin: Origin) {
+    for (const tableId of new Set([...this.touched.keys(), ...this.deleted.keys()])) {
+      const entries = this.touched.get(tableId) ?? new Map<string, { fields: Set<string>; created: boolean }>();
+      const rows: RowChange[] = getRowsByIds(tableId, [...entries.keys()]).map((row) => {
+        const entry = entries.get(row.id)!;
+        return { row, fields: [...entry.fields], ...(entry.created ? { created: true as const } : {}) };
+      });
+      const deleted = [...(this.deleted.get(tableId) ?? [])];
+      if (rows.length > 0 || deleted.length > 0) appendEvent(tableId, { kind: "rows", origin, rows, deleted });
+    }
+  }
+}
+
+/** Changes made by the server itself (seeding, recomputes) rather than a user. */
+export const SYSTEM_ORIGIN: Origin = { userId: "system", name: "System", clientId: null };
+
 /** Everything a batch needs about the base, loaded once per batch. */
 class BatchContext {
+  readonly log = new ChangeLog();
   readonly fields: Map<string, Field>;
   readonly tableOfField: Map<string, string>;
   readonly fieldsOfTable: Map<string, Field[]>;
@@ -139,6 +178,7 @@ function createRow(tableId: string, op: Extract<RowOp, { op: "create" }>, batch:
   getDb()
     .prepare("INSERT INTO rows (id, table_id, seq, rev, created_at, updated_at, cells, errors) VALUES (?, ?, ?, 1, ?, ?, ?, ?)")
     .run(op.rowId, tableId, seq, batch.timestamp, batch.timestamp, serializeCells(computed.values), serializeErrors(computed.errors));
+  batch.log.touch(tableId, op.rowId, Object.keys(values), true);
   // A brand-new row isn't linked from anywhere yet, so nothing else needs recomputing.
   return toRow(loadRow(tableId, op.rowId)!);
 }
@@ -165,12 +205,14 @@ function updateRow(tableId: string, op: Extract<RowOp, { op: "update" }>, batch:
   );
   const row = saveRow(record, computed, batch.timestamp);
   addChanges(changes, tableId, [row.id], [...Object.keys(values), ...order]);
+  batch.log.touch(tableId, row.id, Object.keys(values));
   return row;
 }
 
-function deleteRow(tableId: string, op: Extract<RowOp, { op: "delete" }>, deleted: Map<string, Set<string>>): void {
+function deleteRow(tableId: string, op: Extract<RowOp, { op: "delete" }>, deleted: Map<string, Set<string>>, batch: BatchContext): void {
   const result = getDb().prepare("DELETE FROM rows WHERE table_id = ? AND id = ?").run(tableId, op.rowId);
   if (result.changes === 0) throw new OpFailure({ code: "NOT_FOUND", message: "Row not found (it may have been deleted)" });
+  batch.log.remove(tableId, op.rowId);
   if (!deleted.has(tableId)) deleted.set(tableId, new Set());
   deleted.get(tableId)!.add(op.rowId);
 }
@@ -206,6 +248,7 @@ function unlinkDeletedRows(deleted: Map<string, Set<string>>, batch: BatchContex
         );
         saveRow(record, computed, batch.timestamp);
         addChanges(changes, tableId, [row.id], [field.id, ...order]);
+        batch.log.touch(tableId, row.id, []);
       }
     }
   }
@@ -233,6 +276,7 @@ function propagate(initial: Map<string, TableChanges>, batch: BatchContext) {
           const computed = computeFields(order, { values: row.values, errors: row.errors ?? {} }, batch.fields, batch.formulas, readLinked, batch.evalContext);
           saveRow(record, computed, batch.timestamp);
           addChanges(next, tableId, [row.id], order);
+          batch.log.touch(tableId, row.id, []);
         }
       }
       markRowsChanged(changedTableId);
@@ -246,7 +290,7 @@ function propagate(initial: Map<string, TableChanges>, batch: BatchContext) {
  * or fails on its own (partial result): a failed op is rolled back to its savepoint
  * and reported, the others are kept. Results are in the same order as the ops.
  */
-export function applyRowBatch(table: { id: string; baseId: string }, ops: RowOp[]): RowOpResult[] {
+export function applyRowBatch(table: { id: string; baseId: string }, ops: RowOp[], origin: Origin = SYSTEM_ORIGIN): RowOpResult[] {
   const db = getDb();
   const batch = new BatchContext(table.baseId);
   const changes = new Map<string, TableChanges>();
@@ -259,7 +303,7 @@ export function applyRowBatch(table: { id: string; baseId: string }, ops: RowOp[
         const row = db.transaction(() => {
           if (op.op === "create") return createRow(table.id, op, batch);
           if (op.op === "update") return updateRow(table.id, op, batch, changes);
-          deleteRow(table.id, op, deleted);
+          deleteRow(table.id, op, deleted, batch);
           return null;
         })();
         return { ok: true, rowId: op.rowId, row };
@@ -272,6 +316,7 @@ export function applyRowBatch(table: { id: string; baseId: string }, ops: RowOp[
     unlinkDeletedRows(deleted, batch, changes);
     markRowsChanged(table.id);
     propagate(changes, batch);
+    batch.log.emit(origin);
     return results;
   })();
 }
@@ -283,8 +328,9 @@ export function applyRowBatch(table: { id: string; baseId: string }, ops: RowOp[
  *
  * The fields are computed in dependency order, split into consecutive runs per table,
  * so a lookup in Orders that reads a Customers formula sees the new formula values.
+ * Returns the tables whose rows changed.
  */
-export function recomputeAllRows(baseId: string, fieldIds: string[]): void {
+export function recomputeAllRows(baseId: string, fieldIds: string[]): string[] {
   const db = getDb();
   const batch = new BatchContext(baseId);
   const affected = new Set([...fieldIds, ...dependentsOf(batch.graph, new Set(fieldIds))]);
@@ -313,4 +359,5 @@ export function recomputeAllRows(baseId: string, fieldIds: string[]): void {
       markRowsChanged(run.tableId);
     }
   })();
+  return [...new Set(runs.map((run) => run.tableId))];
 }

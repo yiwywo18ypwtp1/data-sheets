@@ -1,5 +1,6 @@
 import "server-only";
 import { cookies } from "next/headers";
+import { idSchema } from "@/lib/domain/ids";
 import { hasRole, type Role, type User } from "@/lib/domain/user";
 import { getDb } from "./db";
 import { ApiError } from "./errors";
@@ -33,4 +34,13 @@ export function assertRole(user: User, required: Role): void {
   if (!hasRole(user.role, required)) {
     throw new ApiError("FORBIDDEN", 403, `This action requires the ${required} role; you are a ${user.role}`);
   }
+}
+
+/** Header a browser tab sends with its writes, so it can recognise (and skip) its own realtime events. */
+export const CLIENT_ID_HEADER = "x-client-id";
+
+/** Who a change comes from, for the realtime events. */
+export function originOf(user: User, request?: Request): { userId: string; name: string; clientId: string | null } {
+  const clientId = idSchema.safeParse(request?.headers.get(CLIENT_ID_HEADER));
+  return { userId: user.id, name: user.name, clientId: clientId.success ? clientId.data : null };
 }

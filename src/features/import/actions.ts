@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 import { idSchema } from "@/lib/domain/ids";
-import { assertRole, getCurrentUser } from "@/server/auth";
+import { assertRole, getCurrentUser, originOf } from "@/server/auth";
 import { ApiError } from "@/server/errors";
 import { importBatch, importRowsSchema, type ImportBatchResult } from "@/server/imports";
 import { getTable } from "@/server/tables";
@@ -23,11 +23,13 @@ export type ImportBatchOutcome = { ok: true; result: ImportBatchResult } | { ok:
  */
 export async function importRowsAction(input: z.input<typeof inputSchema>): Promise<ImportBatchOutcome> {
   try {
-    assertRole(await getCurrentUser(), "creator");
+    const user = await getCurrentUser();
+    assertRole(user, "creator");
     const { tableId, importId, batchIndex, rows } = inputSchema.parse(input);
     const table = getTable(tableId);
     if (!table) return { ok: false, message: "The table no longer exists" };
-    return { ok: true, result: importBatch(table, `${importId}:${batchIndex}`, rows) };
+    // The wizard doesn't need to recognise its own events: it isn't showing the grid.
+    return { ok: true, result: importBatch(table, `${importId}:${batchIndex}`, rows, originOf(user)) };
   } catch (error) {
     if (error instanceof ApiError) return { ok: false, message: error.message };
     if (error instanceof z.ZodError) return { ok: false, message: "The batch is invalid" };

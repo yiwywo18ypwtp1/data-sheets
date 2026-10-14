@@ -22,9 +22,22 @@ export class ApiRequestError extends Error {
   }
 }
 
+let clientId: string | null = null;
+
+/**
+ * This browser tab's id. Sent with every request (`x-client-id`), so the realtime events
+ * caused by this tab's own writes can be recognised and skipped here.
+ */
+export function getClientId(): string {
+  clientId ??= `tab_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  return clientId;
+}
+
 /** Fetches JSON; a non-2xx answer becomes an `ApiRequestError` from the API's error body. A 204 resolves to null. */
 export async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  const headers = new Headers(init?.headers);
+  headers.set("x-client-id", getClientId());
+  const response = await fetch(url, { ...init, headers });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as ErrorBody | null;
     throw new ApiRequestError(
@@ -75,5 +88,15 @@ export function saveView(view: View, version: number) {
     method: "PUT",
     headers: { "content-type": "application/json", "if-match": `"${version}"` },
     body: JSON.stringify(view),
+  });
+}
+
+export type PresenceCell = { rowId: string; fieldId: string } | null;
+
+export async function sendPresence(tableId: string, viewId: string, cell: PresenceCell): Promise<void> {
+  await request<null>(`/api/tables/${tableId}/presence`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ clientId: getClientId(), viewId, cell }),
   });
 }

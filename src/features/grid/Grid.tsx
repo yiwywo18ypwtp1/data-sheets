@@ -24,7 +24,10 @@ import { useCellEditing } from "./useCellEditing";
 import { useClipboard } from "./useClipboard";
 import { GridEditingContext } from "./GridEditingContext";
 import { useGridSelection } from "./useGridSelection";
+import { Toasts } from "./Toasts";
+import { pushToast } from "./toastStore";
 import { useGridStore } from "./useGridStore";
+import { useRealtime } from "./useRealtime";
 import { useSavedView } from "./useSavedView";
 import { useViewerLocale } from "./useViewerLocale";
 import { useViewLayout } from "./useViewLayout";
@@ -94,7 +97,7 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
     setFieldDialog(null);
     router.refresh();
   };
-  const [panelStatus, setPanelStatus] = useState({ dirty: false, active: view.sorts.length });
+  const [panelStatus, setPanelStatus] = useState({ dirty: false, active: view.sorts.length, fieldIds: "" });
   const applyQuery = useCallback(
     ({ filter, sorts }: ViewQuery) => {
       if (JSON.stringify({ filter, sorts }) !== JSON.stringify({ filter: store.query.filter, sorts: store.query.sorts })) {
@@ -176,6 +179,35 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
     focusGrid: () => scrollRef.current?.focus({ preventScroll: true }),
   });
   const clipboard = useClipboard({ store, columns, canEdit, locale, timeZone, formatters });
+  const realtimeStatus = useRealtime({
+    tableId,
+    viewId: view.id,
+    store,
+    fields,
+    columns,
+    locale,
+    timeZone,
+    onSchemaChange: (event) => {
+      // Explain what closes: the grid remounts with the new fields, which closes any editor or dialog.
+      const deleted = event.deletedFieldId ? fields.find((field) => field.id === event.deletedFieldId) : undefined;
+      const editingField = store.editing ? columns[store.editing.col]?.field.id : undefined;
+      const dialogField = fieldDialog && "field" in fieldDialog ? fieldDialog.field.id : undefined;
+      // The panel's draft too: a condition being set up may not have reached the grid yet.
+      const filtered = deleted !== undefined && panelStatus.fieldIds.split(",").includes(deleted.id);
+      if (deleted && (editingField === deleted.id || dialogField === deleted.id)) {
+        pushToast({ tone: "warning", message: `${event.origin.name} deleted the field “${deleted.name}” you were editing, so it was closed.` });
+      } else if (deleted && filtered) {
+        pushToast({ tone: "warning", message: `${event.origin.name} deleted the field “${deleted.name}” that your unsaved filter or sort used; it was reset to the saved view.` });
+      } else {
+        pushToast({ message: `${event.origin.name} changed the fields of this table.` });
+      }
+      router.refresh();
+    },
+    onViewSaved: (saved, version, by) => {
+      savedView.applyRemote(saved, version);
+      pushToast({ message: `${by} saved changes to this view.` });
+    },
+  });
   const announcement = useGridStore(store, (state) => state.announcement);
   const announcementId = useGridStore(store, (state) => state.announcementId);
   const idPrefix = useId();
@@ -214,6 +246,7 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
         layoutError={viewLayout.error}
         panelOpen={panelOpen}
         panelStatus={panelStatus}
+        realtimeStatus={realtimeStatus}
         onTogglePanel={() => setPanelOpen((open) => !open)}
         onAddField={canChangeSchema ? () => setFieldDialog({ mode: "create" }) : null}
         importHref={importHref}
@@ -301,6 +334,7 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
           </div>
         </GridEditingContext.Provider>
       </div>
+      <Toasts />
       {fieldDialog?.mode === "delete" ? (
         <DeleteFieldDialog
           tableId={tableId}

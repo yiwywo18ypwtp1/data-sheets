@@ -24,7 +24,8 @@ type ViewPanelProps = {
   save: ((patch: Partial<View>) => Promise<View>) | null;
   /** Called with a valid filter and sort, debounced, so the grid shows them before they're saved. */
   onApply: (query: ViewQuery) => void;
-  onStatusChange: (status: { dirty: boolean; active: number }) => void;
+  /** `fieldIds`: the fields the draft's conditions and sorts use, comma-separated. */
+  onStatusChange: (status: { dirty: boolean; active: number; fieldIds: string }) => void;
   /** A filter from the link (`?filter=`): the panel starts with it as an unsaved change. */
   linkFilter: FilterGroup | null;
   linkFilterError: string | null;
@@ -74,6 +75,12 @@ export function ViewPanel({ open, fields, saved, save, onApply, onStatusChange, 
   const { isDirty, isSubmitting } = form.formState;
 
   const savedFilterKey = JSON.stringify(saved.filter);
+  const savedQueryKey = JSON.stringify(pick(saved));
+
+  // Someone else saved the view: follow it, unless this panel has its own unsaved changes.
+  useEffect(() => {
+    if (!form.formState.isDirty) form.reset(JSON.parse(savedQueryKey) as ViewQuery);
+  }, [savedQueryKey, form]);
   useEffect(() => {
     const timer = setTimeout(() => {
       const parsed = schema.safeParse(form.getValues());
@@ -84,8 +91,10 @@ export function ViewPanel({ open, fields, saved, save, onApply, onStatusChange, 
     return () => clearTimeout(timer);
   }, [valuesKey, savedFilterKey, schema, form, onApply]);
 
-  const active = activeCount(form.getValues());
-  useEffect(() => onStatusChange({ dirty: isDirty, active }), [isDirty, active, onStatusChange]);
+  const draft = form.getValues();
+  const active = activeCount(draft);
+  const fieldIds = [...draft.filter.conditions, ...draft.filter.groups.flatMap((group) => group.conditions), ...draft.sorts].map((item) => item.fieldId).join(",");
+  useEffect(() => onStatusChange({ dirty: isDirty, active, fieldIds }), [isDirty, active, fieldIds, onStatusChange]);
 
   const submit = form.handleSubmit(async (query) => {
     if (!save) return;

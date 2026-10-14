@@ -263,14 +263,53 @@ describe("GridStore writes", () => {
     expect(store.announcement).toBe("1 change couldn't be saved");
   });
 
-  it("rolls back a whole batch on a network error", async () => {
+  it("keeps edits applied through a network error and sends them again, in order", async () => {
     const { store, batches } = setup();
     store.writeCells([{ rowId: "row_a_3", fieldId: "n", value: 30 }]);
     await vi.advanceTimersByTimeAsync(0);
-    batches[0].answer(new Error("Simulated failure"));
+    batches[0].answer(new Error("Failed to fetch"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.connection).toBe("offline");
+    expect(store.getRowAt(3)?.values.n).toBe(30); // not rolled back
+    store.writeCells([{ rowId: "row_a_3", fieldId: "n", value: 31 }]); // edited while offline: tries again at once
+    await vi.advanceTimersByTimeAsync(0);
+    expect(batches).toHaveLength(2);
+    // The failed edit goes first, then the newer one, so the newer one wins on the server.
+    expect(batches[1].ops.map((op) => (op.op === "update" ? op.values.n : null))).toEqual([30, 31]);
+    batches[1].answer(batches[1].ops.map((op) => confirmed(op as Extract<RowOp, { op: "update" }>)));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.connection).toBe("online");
+    expect(store.getRowAt(3)?.values.n).toBe(31);
+  });
+
+  it("rolls back a batch the server refuses as a whole (4xx)", async () => {
+    const { store, batches } = setup();
+    store.writeCells([{ rowId: "row_a_3", fieldId: "n", value: 30 }]);
+    await vi.advanceTimersByTimeAsync(0);
+    batches[0].answer(Object.assign(new Error("Forbidden"), { status: 403 }));
     await vi.advanceTimersByTimeAsync(0);
     expect(store.getRowAt(3)?.values.n).toBe(3);
-    expect(store.getRowAt(3)?.saveErrors?.n).toBe("Not saved: Simulated failure");
+    expect(store.getRowAt(3)?.saveErrors?.n).toBe("Not saved: Forbidden");
+  });
+
+  it("applies another user's change of a loaded row under this tab's unsent edits", async () => {
+    const { store } = setup();
+    store.writeCells([{ rowId: "row_a_4", fieldId: "note", value: "mine" }]);
+    const remote = { ...row(4), values: { ...row(4).values, n: 400 }, rev: 2 };
+    expect(store.applyRemoteRows([{ row: remote, fields: ["n"] }], [], "Eddie").conflicts).toEqual([]);
+    expect(store.getRowAt(4)?.values).toMatchObject({ n: 400, note: "mine" });
+  });
+
+  it("reports a conflict when another user overwrites a cell this tab saved", async () => {
+    const { store, batches } = setup();
+    store.writeCells([{ rowId: "row_a_5", fieldId: "n", value: 50 }]);
+    await vi.advanceTimersByTimeAsync(0);
+    batches[0].answer(batches[0].ops.map((op) => confirmed(op as Extract<RowOp, { op: "update" }>)));
+    await vi.advanceTimersByTimeAsync(0);
+    const theirs = { ...row(5), values: { ...row(5).values, n: 55 }, rev: 9 };
+    const { conflicts } = store.applyRemoteRows([{ row: theirs, fields: ["n"] }], [], "Eddie");
+    expect(conflicts).toEqual([{ rowId: "row_a_5", fieldId: "n", mine: 50, theirs: 55, by: "Eddie" }]);
+    expect(store.getRowAt(5)?.values.n).toBe(55); // last write on the server wins
   });
 
   it("sends batches one after another, keeping later edits applied while earlier ones settle", async () => {
