@@ -7,6 +7,7 @@ import type { View } from "@/lib/domain/view";
 import { EMPTY_FILTER } from "@/lib/domain/filter";
 import { buildDependencyGraph, topologicalOrder } from "@/lib/formula/graph";
 import { computeFields, FormulaCache, type ComputedResult } from "./compute";
+import { serializeCells, serializeErrors } from "./storage";
 
 /**
  * Deterministic demo data: one base, three linked tables (Orders 50 000,
@@ -278,11 +279,6 @@ function generateRows(scale: number) {
   return { products, customers, orders };
 }
 
-/** Drops null cells: an absent key means empty, which keeps 50 000 JSON rows smaller. */
-export function serializeCells(values: Record<string, CellValue>): string {
-  return JSON.stringify(Object.fromEntries(Object.entries(values).filter(([, value]) => value !== null)));
-}
-
 export function seedDatabase(db: Database.Database, scale: number) {
   // IMMEDIATE takes the write lock first, so two processes starting together can't both seed.
   db.transaction(() => {
@@ -333,8 +329,7 @@ export function seedDatabase(db: Database.Database, scale: number) {
         const computed: ComputedResult = computeFields(computedIds, { values: row.values, errors: {} }, allFields, formulas, readLinked, context);
         row.values = computed.values;
         const createdAt = new Date(Date.UTC(2025, 0, 1) + i * 60_000).toISOString();
-        const errors = Object.keys(computed.errors).length > 0 ? JSON.stringify(computed.errors) : null;
-        insertRow.run(row.id, tableId, i + 1, createdAt, createdAt, serializeCells(row.values), errors);
+        insertRow.run(row.id, tableId, i + 1, createdAt, createdAt, serializeCells(row.values), serializeErrors(computed.errors));
       });
     }
   }).immediate();

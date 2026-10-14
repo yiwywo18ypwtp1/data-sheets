@@ -51,8 +51,11 @@ export function getView(viewId: string): { view: View; tableId: string; version:
   return { view: JSON.parse(record.config) as View, tableId: record.table_id, version: record.version };
 }
 
-/** Fields of every table in the base: the formula dependency graph spans tables through lookups. */
-export function getBaseFields(baseId: string): Field[] {
-  const records = getDb().prepare("SELECT fields FROM tables WHERE base_id = ?").all(baseId) as Pick<TableRecord, "fields">[];
-  return records.flatMap((record) => JSON.parse(record.fields) as Field[]);
+/**
+ * Every table's fields in the base. The formula dependency graph spans tables
+ * through lookups, so writes and schema checks need all of them.
+ */
+export function getBaseSchema(baseId: string): { tableId: string; fields: Field[] }[] {
+  const records = getDb().prepare("SELECT id, fields FROM tables WHERE base_id = ?").all(baseId) as Pick<TableRecord, "id" | "fields">[];
+  return records.map((record) => ({ tableId: record.id, fields: JSON.parse(record.fields) as Field[] }));
 }

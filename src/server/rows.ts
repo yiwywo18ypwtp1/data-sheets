@@ -1,5 +1,4 @@
 import "server-only";
-import type { CellValue } from "@/lib/domain/cell";
 import type { Field } from "@/lib/domain/field";
 import type { FilterGroup } from "@/lib/domain/filter";
 import type { Row } from "@/lib/domain/row";
@@ -7,29 +6,7 @@ import type { TableMeta } from "@/lib/domain/table";
 import type { Sort } from "@/lib/domain/view";
 import { getDb } from "./db";
 import { compileFilter, compileSorts, type QueryContext } from "./filterSql";
-
-export type RowRecord = {
-  id: string;
-  table_id: string;
-  seq: number;
-  rev: number;
-  created_at: string;
-  updated_at: string;
-  cells: string;
-  errors: string | null;
-};
-
-export function toRow(record: RowRecord): Row {
-  const row: Row = {
-    id: record.id,
-    values: JSON.parse(record.cells) as Record<string, CellValue>,
-    createdAt: record.created_at,
-    updatedAt: record.updated_at,
-    rev: record.rev,
-  };
-  if (record.errors) row.errors = JSON.parse(record.errors) as Record<string, string>;
-  return row;
-}
+import { toRow, type RowRecord } from "./storage";
 
 /** Footer aggregates for numeric columns, over all rows matching the filter (not just the window). */
 export type Aggregates = Record<string, { sum: number; avg: number | null }>;
