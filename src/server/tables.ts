@@ -12,20 +12,38 @@ import { getDb } from "./db";
 type TableRecord = { id: string; base_id: string; name: string; primary_field_id: string; fields: string; version: number };
 type ViewRecord = { id: string; table_id: string; config: string; version: number };
 
-export type TableSummary = { id: string; name: string };
+/** `defaultViewId` lets table tabs link straight to a view instead of bouncing through a redirect. */
+export type TableSummary = { id: string; name: string; defaultViewId: string };
 export type BaseSummary = { id: string; name: string; tables: TableSummary[] };
 
 export function getBase(baseId: string): BaseSummary | null {
   const db = getDb();
   const base = db.prepare("SELECT id, name FROM bases WHERE id = ?").get(baseId) as { id: string; name: string } | undefined;
   if (!base) return null;
-  const tables = db.prepare("SELECT id, name FROM tables WHERE base_id = ? ORDER BY position").all(baseId) as TableSummary[];
+  const tables = db
+    .prepare(
+      `SELECT t.id, t.name, (SELECT v.id FROM views v WHERE v.table_id = t.id ORDER BY v.position LIMIT 1) AS defaultViewId
+       FROM tables t WHERE t.base_id = ? ORDER BY t.position`,
+    )
+    .all(baseId) as TableSummary[];
   return { ...base, tables };
 }
 
 export function getFirstBaseId(): string | null {
   const row = getDb().prepare("SELECT id FROM bases ORDER BY rowid LIMIT 1").get() as { id: string } | undefined;
   return row?.id ?? null;
+}
+
+/** The first view of a table (or of the base's first table), for redirects from shorter URLs. */
+export function getDefaultView(baseId: string, tableId?: string): { tableId: string; viewId: string } | null {
+  const row = getDb()
+    .prepare(
+      `SELECT t.id AS tableId, v.id AS viewId FROM tables t JOIN views v ON v.table_id = t.id
+       WHERE t.base_id = ? AND (? IS NULL OR t.id = ?)
+       ORDER BY t.position, v.position LIMIT 1`,
+    )
+    .get(baseId, tableId ?? null, tableId ?? null) as { tableId: string; viewId: string } | undefined;
+  return row ?? null;
 }
 
 export function getTable(tableId: string): (TableMeta & { baseId: string }) | null {
