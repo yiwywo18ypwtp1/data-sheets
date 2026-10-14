@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { RowWindowResponse } from "@/lib/domain/api";
 import type { Field } from "@/lib/domain/field";
+import type { FilterGroup } from "@/lib/domain/filter";
 import type { Row } from "@/lib/domain/row";
 import type { View, ViewQuery } from "@/lib/domain/view";
 import { createCellFormatter } from "@/lib/format";
@@ -36,6 +37,9 @@ type GridProps = {
   canChangeSchema: boolean;
   /** Every table of the base with its fields: link targets and lookups in the field dialog. */
   tables: BaseTable[];
+  /** An unsaved filter from the URL (`?filter=`), applied on top of the saved view. */
+  linkFilter: FilterGroup | null;
+  linkFilterError: string | null;
   /** The table's CSV import page, for creators. */
   importHref: string | null;
   tableName: string;
@@ -60,11 +64,11 @@ const INITIAL_RECT = { width: 1280, height: 800 };
  * through `aria-activedescendant`, which works even though cells come and go as
  * they scroll in and out of view.
  */
-export function Grid({ tableId, canEdit, canChangeSchema, tables, importHref, tableName, fields, primaryFieldId, view, viewVersion, initialWindow }: GridProps) {
+export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, linkFilterError, importHref, tableName, fields, primaryFieldId, view, viewVersion, initialWindow }: GridProps) {
   const [store] = useState(
     () =>
       new GridStore({
-        query: { filter: view.filter, sorts: view.sorts, timeZone: "UTC" },
+        query: { filter: linkFilter ?? view.filter, sorts: view.sorts, timeZone: "UTC" },
         fields,
         fetchWindow: (query, offset, limit, signal) => fetchRowWindow(tableId, query, offset, limit, signal),
         sendBatch: (ops) => sendRowBatch(tableId, ops),
@@ -82,7 +86,7 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, importHref, ta
 
   const savedView = useSavedView(view, viewVersion);
   const viewLayout = useViewLayout(view, canEdit ? savedView.save : null);
-  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(linkFilter !== null || linkFilterError !== null);
   const [fieldDialog, setFieldDialog] = useState<{ mode: "edit" | "delete"; field: Field } | { mode: "create" } | null>(null);
   const router = useRouter();
   // The page re-renders with the new schema; the grid is keyed by it and starts over with fresh rows.
@@ -222,6 +226,8 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, importHref, ta
         saved={savedView.view}
         save={canEdit ? savedView.save : null}
         onApply={applyQuery}
+        linkFilter={linkFilter}
+        linkFilterError={linkFilterError}
         onStatusChange={setPanelStatus}
         labelOf={store.getLabel}
       />

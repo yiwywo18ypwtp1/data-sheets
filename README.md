@@ -56,6 +56,8 @@ npm run lint
 - Add conditions and a condition group (AND/OR). The operators depend on the field type. Changing the field resets the operator and value; switching "contains" → "is" keeps the text.
 - The grid follows after 300 ms. "between" with min > max shows an error and isn't applied.
 - "Unsaved view changes" appears with Save view / Reset. Save, reload: the same view. Viewers can filter but not save.
+- While the filter is unsaved, the URL carries it (`?filter=<base64>`): "Copy link with filter" and open it in another tab, which shows the same rows with the filter as an unsaved change. A link whose filter doesn't fit the table (`?filter=garbage`) opens the saved view with a notice.
+- Sorts are reordered by dragging the ⠿ handle, or with ↑/↓ from the keyboard.
 
 ### Fields and formulas (as a creator)
 
@@ -97,7 +99,6 @@ Planned in this order, with the reason each one waits:
 1. **Realtime and conflicts (2.6).** SSE `GET /api/tables/:id/events?since=` from an event log table written in the same transaction as each batch. The grid store applies remote row changes to loaded blocks. A `rev` mismatch on the same cell shows a toast with "keep mine". This also gives presence and the drop/replay test.
 2. **Field type change with preview (2.3).** `PATCH ?preview=1` runs the target coercer over all values (counts and examples), then converts in one transaction. The same goes for `includeTime` and link target changes, which are refused today.
 3. **Grouping, fill handle, undo of row deletion (2.1 Advanced).** Grouping needs group headers in the virtual row model (`[header, rows…]` index mapping).
-4. **Filter in the URL and drag-and-drop sorts (2.2 Advanced).** `encodeFilterParam` already exists and is used by the API.
 5. **Formula editor highlighting and autocomplete; import resume after reload and link columns (2.4 Advanced).** Resume needs the import id and progress in `sessionStorage`, plus the stored batch keys the server already keeps.
 6. **Public form `/f/[viewId]` (2.5).**
 7. **RTL and Playwright tests.** The pure logic is unit-tested (formulas, coercion, filters, mapping, the grid store, undo, selection, the API). The UI flows were checked with ad-hoc Playwright scripts, not committed tests.

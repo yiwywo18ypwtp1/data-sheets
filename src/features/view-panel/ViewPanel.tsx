@@ -4,7 +4,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useMemo, useState } from "react";
 import { FormProvider, useForm, useWatch } from "react-hook-form";
 import type { Field } from "@/lib/domain/field";
-import { isConditionComplete } from "@/lib/domain/filter";
+import { isConditionComplete, type FilterGroup } from "@/lib/domain/filter";
+import { encodeFilterParam } from "@/lib/domain/query";
 import { viewQuerySchemaFor, type View, type ViewQuery } from "@/lib/domain/view";
 import { ApiRequestError } from "@/features/grid/api";
 import { FilterFields, type FilterContext } from "./FilterFields";
@@ -24,10 +25,25 @@ type ViewPanelProps = {
   /** Called with a valid filter and sort, debounced, so the grid shows them before they're saved. */
   onApply: (query: ViewQuery) => void;
   onStatusChange: (status: { dirty: boolean; active: number }) => void;
+  /** A filter from the link (`?filter=`): the panel starts with it as an unsaved change. */
+  linkFilter: FilterGroup | null;
+  linkFilterError: string | null;
   labelOf: FilterContext["labelOf"];
 };
 
 const pick = (view: View): ViewQuery => ({ filter: view.filter, sorts: view.sorts });
+
+/**
+ * Keeps `?filter=` in the address bar equal to the applied filter while it differs from
+ * the saved one, so the URL can be shared; it disappears after Save or Reset. Next.js
+ * syncs `history.replaceState` with its router, and no navigation happens.
+ */
+function syncFilterParam(filter: FilterGroup, savedFilterKey: string) {
+  const url = new URL(window.location.href);
+  if (JSON.stringify(filter) === savedFilterKey) url.searchParams.delete("filter");
+  else url.searchParams.set("filter", encodeFilterParam(filter));
+  if (url.href !== window.location.href) window.history.replaceState(window.history.state, "", url);
+}
 
 /** Conditions and sorts that actually affect the grid, for the toolbar button. */
 function activeCount(query: ViewQuery): number {
@@ -43,21 +59,30 @@ function activeCount(query: ViewQuery): number {
  *
  * The panel stays mounted while closed (just hidden), so a draft survives closing it.
  */
-export function ViewPanel({ open, fields, saved, save, onApply, onStatusChange, labelOf }: ViewPanelProps) {
+export function ViewPanel({ open, fields, saved, save, onApply, onStatusChange, linkFilter, linkFilterError, labelOf }: ViewPanelProps) {
   const schema = useMemo(() => viewQuerySchemaFor(fields), [fields]);
   const form = useForm<ViewQuery>({ resolver: zodResolver(schema), defaultValues: pick(saved), mode: "onChange" });
+  const [copied, setCopied] = useState(false);
+
+  // The link's filter is a draft on top of the saved view: shown as unsaved, Reset drops it.
+  useEffect(() => {
+    if (linkFilter) form.reset({ filter: linkFilter, sorts: form.getValues("sorts") }, { keepDefaultValues: true });
+  }, [linkFilter, form]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const values = useWatch({ control: form.control });
   const valuesKey = JSON.stringify(values);
   const { isDirty, isSubmitting } = form.formState;
 
+  const savedFilterKey = JSON.stringify(saved.filter);
   useEffect(() => {
     const timer = setTimeout(() => {
       const parsed = schema.safeParse(form.getValues());
-      if (parsed.success) onApply(parsed.data);
+      if (!parsed.success) return;
+      onApply(parsed.data);
+      syncFilterParam(parsed.data.filter, savedFilterKey);
     }, APPLY_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [valuesKey, schema, form, onApply]);
+  }, [valuesKey, savedFilterKey, schema, form, onApply]);
 
   const active = activeCount(form.getValues());
   useEffect(() => onStatusChange({ dirty: isDirty, active }), [isDirty, active, onStatusChange]);
@@ -75,6 +100,22 @@ export function ViewPanel({ open, fields, saved, save, onApply, onStatusChange, 
 
   const actions = (
     <div className="flex items-center gap-2">
+      {linkFilterError && (
+        <span role="alert" className="text-xs text-amber-700 dark:text-amber-400">
+          {linkFilterError}
+        </span>
+      )}
+      {isDirty && (
+        <button
+          type="button"
+          className={smallButtonClass}
+          title="A link to this view with the current (unsaved) filter"
+          onClick={() => void navigator.clipboard.writeText(window.location.href).then(() => setCopied(true))}
+          onBlur={() => setCopied(false)}
+        >
+          {copied ? "Link copied" : "Copy link with filter"}
+        </button>
+      )}
       {isDirty && <span className="text-xs text-amber-700 dark:text-amber-400">Unsaved view changes</span>}
       {saveError && (
         <span role="alert" className="text-xs text-red-600">

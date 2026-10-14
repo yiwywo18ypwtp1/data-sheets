@@ -1,6 +1,8 @@
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import type { Field } from "@/lib/domain/field";
+import { filterFieldIssues } from "@/lib/domain/filter";
+import { decodeFilterParam } from "@/lib/domain/query";
 import { hasRole } from "@/lib/domain/user";
 import { routes } from "@/lib/routes";
 import { Grid } from "@/features/grid/Grid";
@@ -29,8 +31,9 @@ function schemaKey(fields: Field[]): string {
  *
  * The segment's loading.tsx is the Suspense boundary for the params/cookie reads.
  */
-export default async function ViewPage({ params }: PageProps<"/b/[baseId]/[tableId]/[viewId]">) {
+export default async function ViewPage({ params, searchParams }: PageProps<"/b/[baseId]/[tableId]/[viewId]">) {
   const { baseId, tableId, viewId } = await params;
+  const { filter: filterParam } = await searchParams;
   // Rows and "now" must be read per request. Prefetching can prerender with params and
   // cookies known, and better-sqlite3 is synchronous, so we opt out explicitly.
   await connection();
@@ -43,9 +46,14 @@ export default async function ViewPage({ params }: PageProps<"/b/[baseId]/[table
   const view = table.views.find((candidate) => candidate.id === viewId);
   if (!view) notFound();
 
+  // `?filter=<base64>`: an unsaved filter shared by link. One that doesn't fit the table is ignored, with a notice.
+  const linkFilter = typeof filterParam === "string" ? decodeFilterParam(filterParam) : null;
+  const linkFilterValid = linkFilter !== null && filterFieldIssues(linkFilter, table.fields).length === 0;
+  const linkFilterError = typeof filterParam === "string" && !linkFilterValid ? "The filter in the link doesn't fit this table and was ignored." : null;
+
   // The viewer's time zone isn't known on the server; UTC only matters for "today" filters.
   const initialWindow = queryRows(table, {
-    filter: view.filter,
+    filter: linkFilterValid ? linkFilter : view.filter,
     sorts: view.sorts,
     offset: 0,
     limit: INITIAL_WINDOW,
@@ -77,6 +85,8 @@ export default async function ViewPage({ params }: PageProps<"/b/[baseId]/[table
         canEdit={hasRole(user.role, "editor")}
         canChangeSchema={hasRole(user.role, "creator")}
         tables={baseTables}
+        linkFilter={linkFilterValid ? linkFilter : null}
+        linkFilterError={linkFilterError}
         importHref={hasRole(user.role, "creator") ? routes.importCsv(baseId, tableId) : null}
         tableName={table.name}
         fields={table.fields}
