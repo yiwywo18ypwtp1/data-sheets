@@ -179,9 +179,37 @@ describe("fields", () => {
     });
   });
 
-  it("refuses type changes and the conversion preview in Core", async () => {
-    expect((await patchField("fld_o_notes", { type: "number" })).status).toBe(400);
-    expect((await patchField("fld_o_notes", { type: "number" }, "?preview=1")).status).toBe(400);
+  it("previews and converts text → number (values that aren't numbers become empty), and back", async () => {
+    const rowIds = ["row_o_000001", "row_o_000002", "row_o_000003"];
+    const writes = await batchRoute.POST(
+      send("POST", "/api/tables/tbl_orders/rows/batch", { ops: rowIds.map((rowId, i) => ({ op: "update", rowId, values: { fld_o_rep: ["1 234,5", "42", "n/a"][i] }, rev: 0 })) }),
+      params({ id: "tbl_orders" }),
+    );
+    expect(writes.status).toBe(200);
+    const asNumber = { name: "Sales rep", type: "number", precision: 1 };
+
+    const preview = await patchField("fld_o_rep", asNumber, "?preview=1&locale=uk-UA&tz=Europe/Kyiv");
+    expect(preview.status).toBe(200);
+    const { preview: summary } = (await preview.json()) as { preview: { total: number; converted: number; emptied: number; failures: { from: string }[] } };
+    expect(summary.converted + summary.emptied).toBe(summary.total);
+    expect(summary.failures.map((failure) => failure.from)).toContain("n/a");
+    expect(getTable("tbl_orders")!.fields.find((field) => field.id === "fld_o_rep")!.type).toBe("text"); // nothing changed yet
+
+    expect((await patchField("fld_o_rep", asNumber, "?locale=uk-UA&tz=Europe/Kyiv")).status).toBe(200);
+    expect(getRowsByIds("tbl_orders", rowIds).map((row) => row.values.fld_o_rep ?? null)).toEqual([1234.5, 42, null]);
+
+    expect((await patchField("fld_o_rep", { name: "Sales rep", type: "text" })).status).toBe(200);
+    expect(getRowsByIds("tbl_orders", rowIds).map((row) => row.values.fld_o_rep ?? null)).toEqual(["1234.5", "42", null]);
+  });
+
+  it("converts date ↔ date-time and refuses to change a link's table", async () => {
+    const [before] = getRowsByIds("tbl_orders", ["row_o_000004"]);
+    expect((await patchField("fld_o_due", { includeTime: true, timeZone: "Europe/Kyiv" })).status).toBe(200);
+    const [after] = getRowsByIds("tbl_orders", ["row_o_000004"]);
+    expect(after.values.fld_o_due).toMatch(/T\d{2}:00:00\.000Z$/);
+    expect((await patchField("fld_o_due", { includeTime: false })).status).toBe(200);
+    expect(getRowsByIds("tbl_orders", ["row_o_000004"])[0].values.fld_o_due).toBe(before.values.fld_o_due);
+    expect((await patchField("fld_o_customer", { targetTableId: "tbl_products" })).status).toBe(400);
   });
 
   it("refuses to delete a field that formulas use unless forced, then shows #REF! instead of failing", async () => {
@@ -206,13 +234,15 @@ describe("fields", () => {
     expect((await createField({ id: "fld_c_name", name: "Borrowed id", type: "text" })).status).toBe(409);
   });
 
-  it("refuses setting changes that would leave stored values in the wrong shape", async () => {
-    expect((await patchField("fld_o_customer", { targetTableId: "tbl_products" })).status).toBe(400);
-    expect((await patchField("fld_o_due", { includeTime: true })).status).toBe(400);
+  it("keeps the first record when a link stops allowing several", async () => {
     const created = await createField({ name: "Extras", type: "link", targetTableId: "tbl_products", multiple: true });
     const { field } = (await created.json()) as { field: { id: string } };
-    expect((await patchField(field.id, { multiple: false })).status).toBe(400);
-    expect((await patchField(field.id, { name: "Add-ons", multiple: true })).status).toBe(200);
+    await batchRoute.POST(
+      send("POST", "/api/tables/tbl_orders/rows/batch", { ops: [{ op: "update", rowId: "row_o_000006", values: { [field.id]: ["row_p_00003", "row_p_00004"] }, rev: 0 }] }),
+      params({ id: "tbl_orders" }),
+    );
+    expect((await patchField(field.id, { multiple: false })).status).toBe(200);
+    expect(getRowsByIds("tbl_orders", ["row_o_000006"])[0].values[field.id]).toEqual(["row_p_00003"]);
   });
 
   it("doesn't let a lookup broken by a force-deleted link block later schema changes", async () => {

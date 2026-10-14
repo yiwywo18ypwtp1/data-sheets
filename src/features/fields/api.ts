@@ -11,8 +11,12 @@ export function createField(tableId: string, field: Field) {
   });
 }
 
-export function updateField(tableId: string, field: Field) {
-  return request<{ field: Field }>(`/api/tables/${tableId}/fields/${field.id}`, {
+type Viewer = { locale: string; timeZone: string };
+const viewerParams = ({ locale, timeZone }: Viewer) => new URLSearchParams({ locale, tz: timeZone });
+
+/** Text values convert as the viewer reads them ("1 234,5", "12.03.2026"), so their locale and zone go along. */
+export function updateField(tableId: string, field: Field, viewer: Viewer) {
+  return request<{ field: Field }>(`/api/tables/${tableId}/fields/${field.id}?${viewerParams(viewer)}`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(field),
@@ -37,4 +41,26 @@ export function checkFormula(tableId: string, expression: string, fieldId: strin
     body: JSON.stringify({ tableId, expression, fieldId }),
     signal,
   });
+}
+
+export type ConversionPreview = {
+  total: number;
+  converted: number;
+  emptied: number;
+  examples: { from: string; to: string }[];
+  failures: { from: string; reason: string }[];
+  newOptions: string[];
+};
+
+/** What saving `field` would do to the stored values; nothing is changed. */
+export async function previewFieldChange(tableId: string, field: Field, viewer: Viewer, signal: AbortSignal): Promise<ConversionPreview> {
+  const params = viewerParams(viewer);
+  params.set("preview", "1");
+  const { preview } = await request<{ preview: ConversionPreview }>(`/api/tables/${tableId}/fields/${field.id}?${params}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(field),
+    signal,
+  });
+  return preview;
 }

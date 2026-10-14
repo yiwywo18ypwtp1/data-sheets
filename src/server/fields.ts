@@ -1,16 +1,22 @@
 import "server-only";
-import { fieldSchema, isComputedField, type Field, type FormulaResultType } from "@/lib/domain/field";
+import { createConverter, optionsFromValues, unsupportedConversion, valueAsText, type Converter } from "@/lib/convert/convert";
+import { fieldSchema, isComputedField, type Field, type FormulaResultType, type SelectOption } from "@/lib/domain/field";
+import { filterKindOf, OPERATORS_BY_KIND, type FilterCondition } from "@/lib/domain/filter";
 import { newId } from "@/lib/domain/ids";
 import { tableMetaSchema, type TableMeta } from "@/lib/domain/table";
-import type { View } from "@/lib/domain/view";
+import type { Row } from "@/lib/domain/row";
+import { isSortable, type View } from "@/lib/domain/view";
 import { compileFormula, type CompiledFormula } from "@/lib/formula/compile";
 import { buildDependencyGraph, fieldDependencies, findCycle } from "@/lib/formula/graph";
 import { FormulaSyntaxError } from "@/lib/formula/lexer";
 import { fieldByNameResolver, toDisplayExpression, toStoredExpression } from "@/lib/formula/references";
+import { now } from "./clock";
 import { getDb } from "./db";
 import { ApiError, notFound, zodFieldErrors } from "./errors";
 import { appendEvent, type Origin } from "./events";
 import { recomputeAllRows, SYSTEM_ORIGIN } from "./rowWrites";
+import { linkedRecordLabels, markRowsChanged } from "./rows";
+import { serializeCells, serializeErrors, toRow, type RowRecord } from "./storage";
 import { getBaseSchema, getTable } from "./tables";
 
 /**
@@ -149,51 +155,166 @@ export function createField(tableId: string, input: Record<string, unknown>, ori
   return field;
 }
 
-/**
- * Settings whose change would leave existing values in the wrong shape: links pointing into
- * another table, several links in a single-link field, date-only values in a date-time field.
- */
-function unconvertibleChange(existing: Field, input: Record<string, unknown>): { key: string; message: string } | null {
-  if (existing.type === "link") {
-    if (input.targetTableId !== undefined && input.targetTableId !== existing.targetTableId) {
-      return { key: "targetTableId", message: "Changing the linked table" };
-    }
-    if (existing.multiple && input.multiple === false) return { key: "multiple", message: "Limiting a link to one record" };
+/** The viewer's locale and zone: text like "1 234,5" or "12.03.2026" converts as they'd read it. */
+export type ConvertContext = { locale: string; timeZone: string };
+const DEFAULT_CONVERT_CONTEXT: ConvertContext = { locale: "en-US", timeZone: "UTC" };
+
+export type ConversionPreview = {
+  /** Rows with a value in the field. */
+  total: number;
+  converted: number;
+  /** Values that can't be converted and will be empty. */
+  emptied: number;
+  examples: { from: string; to: string }[];
+  failures: { from: string; reason: string }[];
+  /** Select options that will be created from the values. */
+  newOptions: string[];
+};
+
+type Change = { field: Field; existing: Field; conversion: { rows: Row[]; convert: Converter; labelOf: (rowId: string) => string | undefined } | null };
+
+/** Whether stored values must be rewritten: another type, date ↔ date-time, several links → one, removed options. */
+function needsConversion(existing: Field, field: Field): boolean {
+  if (existing.type !== field.type) return true;
+  if (existing.type === "date" && field.type === "date") return existing.includeTime !== field.includeTime;
+  if (existing.type === "link" && field.type === "link") return existing.multiple && !field.multiple;
+  if ((existing.type === "singleSelect" || existing.type === "multiSelect") && "options" in field) {
+    const kept = new Set(field.options.map((option) => option.id));
+    return existing.options.some((option) => !kept.has(option.id));
   }
-  if (existing.type === "date" && input.includeTime !== undefined && input.includeTime !== existing.includeTime) {
-    return { key: "includeTime", message: "Switching between date and date with time" };
-  }
-  return null;
+  return false;
 }
 
-/** Core supports renaming and editing settings; changing the type (with conversion) is Advanced. */
-export function updateField(tableId: string, fieldId: string, input: Record<string, unknown>, origin: Origin = SYSTEM_ORIGIN): Field {
-  const table = requireTable(tableId);
+/**
+ * Validates an edit of a field and, if stored values must change, prepares their
+ * conversion. Shared by the preview and the real update, so both see the same thing.
+ */
+function planChange(table: Table, fieldId: string, input: Record<string, unknown>, context: ConvertContext): Change {
   const existing = table.fields.find((field) => field.id === fieldId);
   if (!existing) throw notFound("Field");
-  if (input.type !== undefined && input.type !== existing.type) {
-    throw validationError("Changing the field type isn't supported yet", { type: "Changing the type isn't supported yet" });
+  if (existing.type === "link" && input.targetTableId !== undefined && input.targetTableId !== existing.targetTableId) {
+    throw validationError("Changing the linked table isn't supported", { targetTableId: "Changing the linked table isn't supported" });
   }
-  // These settings change what stored values mean, so like a type change they'd need a conversion.
-  const unconvertible = unconvertibleChange(existing, input);
-  if (unconvertible) throw validationError(`${unconvertible.message} isn't supported yet`, { [unconvertible.key]: `${unconvertible.message} isn't supported yet` });
 
   // Unspecified properties keep their current value, so a rename can send just `{ name }`.
   const current = existing.type === "formula" ? { ...existing, expression: toDisplayExpression(existing.expression, table.fields) } : existing;
-  const field = prepareField(table, { ...current, ...input, id: fieldId, type: existing.type }, existing);
+  const candidate: Record<string, unknown> = { ...current, ...input, id: fieldId, type: input.type ?? existing.type };
+  const typeChanged = candidate.type !== existing.type;
 
-  if ((field.type === "singleSelect" || field.type === "multiSelect") && "options" in existing) {
-    const kept = new Set(field.options.map((option) => option.id));
-    if (existing.options.some((option) => !kept.has(option.id))) {
-      // Removing an option would need clearing its values in every row: not supported in Core.
-      throw validationError("Options can't be removed yet", { options: "Options can't be removed yet" });
+  let rows: Row[] = [];
+  let labelOf: (rowId: string) => string | undefined = () => undefined;
+  const loadRows = () => {
+    rows = (getDb().prepare("SELECT * FROM rows WHERE table_id = ?").all(table.id) as RowRecord[]).map(toRow);
+    const labels = linkedRecordLabels([existing], rows, (id) => getTable(id)?.primaryFieldId ?? null);
+    labelOf = (rowId) => labels[rowId];
+  };
+
+  // A new select gets an option for every label among the values (like Airtable).
+  if (typeChanged && (candidate.type === "singleSelect" || candidate.type === "multiSelect")) {
+    loadRows();
+    const texts = rows.map((row) => valueAsText(existing, row.values[fieldId], labelOf));
+    try {
+      const given = Array.isArray(candidate.options) ? (candidate.options as SelectOption[]) : [];
+      candidate.options = optionsFromValues(given, texts, candidate.type === "multiSelect" || existing.type === "multiSelect", () => newId("opt"));
+    } catch (error) {
+      throw validationError(error instanceof Error ? error.message : "Too many options", { type: error instanceof Error ? error.message : "Too many options" });
     }
   }
 
-  saveFields(table, table.fields.map((candidate) => (candidate.id === fieldId ? field : candidate)));
-  const definitionChanged =
-    isComputedField(field) && JSON.stringify({ ...field, name: "" }) !== JSON.stringify({ ...existing, name: "" });
-  announceSchemaChange(table.id, definitionChanged ? recomputeAllRows(table.baseId, [field.id]) : [], origin);
+  const field = prepareField(table, candidate, typeChanged ? undefined : existing);
+  const unsupported = unsupportedConversion(existing, field);
+  if (unsupported) throw validationError(unsupported, { type: unsupported });
+  if (!needsConversion(existing, field)) return { field, existing, conversion: null };
+  if (rows.length === 0) loadRows();
+  return { field, existing, conversion: { rows, convert: createConverter(existing, field, context, labelOf), labelOf } };
+}
+
+/** `PATCH ?preview=1`: what changing the field would do to its values, without changing anything. */
+export function previewFieldChange(tableId: string, fieldId: string, input: Record<string, unknown>, context: ConvertContext = DEFAULT_CONVERT_CONTEXT): ConversionPreview {
+  const table = requireTable(tableId);
+  const { field, existing, conversion } = planChange(table, fieldId, input, context);
+  const newOptions =
+    (field.type === "singleSelect" || field.type === "multiSelect") && "options" in field
+      ? field.options.filter((option) => !(("options" in existing ? existing.options : []) as SelectOption[]).some((old) => old.id === option.id)).map((option) => option.label)
+      : [];
+  const preview: ConversionPreview = { total: 0, converted: 0, emptied: 0, examples: [], failures: [], newOptions };
+  if (!conversion || isComputedField(field)) return preview;
+
+  for (const row of conversion.rows) {
+    const value = row.values[fieldId];
+    if (value === null || value === undefined) continue;
+    preview.total++;
+    const from = valueAsText(existing, value, conversion.labelOf);
+    const result = conversion.convert(value);
+    if (result.ok) {
+      preview.converted++;
+      const to = valueAsText(field, result.value, conversion.labelOf);
+      if (preview.examples.length < 5 && to !== from) preview.examples.push({ from, to });
+    } else {
+      preview.emptied++;
+      if (preview.failures.length < 5) preview.failures.push({ from, reason: result.error });
+    }
+  }
+  return preview;
+}
+
+/** Removes filter conditions and sorts that the field's new type no longer supports. */
+function viewAfterTypeChange(view: View, field: Field): View {
+  const allowed = OPERATORS_BY_KIND[filterKindOf(field)];
+  const keep = (condition: FilterCondition) => condition.fieldId !== field.id || allowed.includes(condition.operator);
+  return {
+    ...view,
+    sorts: view.sorts.filter((sort) => sort.fieldId !== field.id || isSortable(field)),
+    filter: {
+      ...view.filter,
+      conditions: view.filter.conditions.filter(keep),
+      groups: view.filter.groups.map((group) => ({ ...group, conditions: group.conditions.filter(keep) })),
+    },
+  };
+}
+
+/**
+ * Edits a field. A change that alters what stored values mean (another type, date ↔
+ * date-time, one link instead of several, removed options) converts every row's value
+ * in one transaction; values that can't be converted become empty (the preview says
+ * how many). Views drop conditions and sorts the new type can't support.
+ */
+export function updateField(
+  tableId: string,
+  fieldId: string,
+  input: Record<string, unknown>,
+  origin: Origin = SYSTEM_ORIGIN,
+  context: ConvertContext = DEFAULT_CONVERT_CONTEXT,
+): Field {
+  const table = requireTable(tableId);
+  const { field, existing, conversion } = planChange(table, fieldId, input, context);
+  const db = getDb();
+
+  db.transaction(() => {
+    saveFields(table, table.fields.map((candidate) => (candidate.id === fieldId ? field : candidate)));
+    if (!conversion) return;
+    const timestamp = now().toISOString();
+    const update = db.prepare("UPDATE rows SET cells = ?, errors = ?, rev = rev + 1, updated_at = ? WHERE id = ?");
+    for (const row of conversion.rows) {
+      const value = row.values[fieldId];
+      const errors = { ...row.errors };
+      delete errors[fieldId]; // a formula's error doesn't belong to the converted value
+      if ((value === null || value === undefined) && !row.errors?.[fieldId]) continue;
+      const result = value === null || value === undefined ? { ok: true as const, value: null } : conversion.convert(value);
+      const values = { ...row.values, [fieldId]: result.ok ? result.value : null };
+      update.run(serializeCells(values), serializeErrors(errors), timestamp, row.id);
+    }
+    if (existing.type !== field.type) {
+      const updateView = db.prepare("UPDATE views SET config = ?, version = version + 1 WHERE id = ?");
+      for (const view of table.views) updateView.run(JSON.stringify(viewAfterTypeChange(view, field)), view.id);
+    }
+    markRowsChanged(table.id);
+  })();
+
+  const definitionChanged = isComputedField(field) && JSON.stringify({ ...field, name: "" }) !== JSON.stringify({ ...existing, name: "" });
+  // Formulas reading this field see converted values; a field that became computed is computed now.
+  const recomputed = definitionChanged || conversion ? recomputeAllRows(table.baseId, [field.id]) : [];
+  announceSchemaChange(table.id, recomputed, origin);
   return field;
 }
 

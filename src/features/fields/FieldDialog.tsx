@@ -10,6 +10,7 @@ import { ApiRequestError } from "@/features/grid/api";
 import { createField, updateField } from "./api";
 import { Dialog, ErrorText, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from "./Dialog";
 import { FIELD_TYPE_LABELS, fieldDefaults, fieldFormSchema, OPTION_COLORS, toFormValues } from "./fieldForm";
+import { ConversionPreview, changesValues } from "./ConversionPreview";
 import { FormulaEditor } from "./FormulaEditor";
 
 export type BaseTable = { id: string; name: string; fields: Field[] };
@@ -39,8 +40,9 @@ const optionalText = (value: unknown) => (typeof value === "string" && value.tri
  * the form to that type's defaults, so no setting of the old type is sent. Server
  * errors (a cycle, a bad lookup) land on the form fields they name.
  *
- * Editing keeps the type (changing it needs a conversion, not in Core) and locks the
- * settings whose change would leave stored values in the wrong shape.
+ * Editing can change the type or settings that rewrite values (date ↔ date-time, one link
+ * instead of several, removed options); the conversion preview shows what happens to the
+ * values before "Convert field". Only a link's table can't change.
  */
 export function FieldDialog({ tableId, tables, field, previewRows, locale, timeZone, onClose, onSaved }: FieldDialogProps) {
   const table = tables.find((candidate) => candidate.id === tableId)!;
@@ -58,13 +60,15 @@ export function FieldDialog({ tableId, tables, field, previewRows, locale, timeZ
   const type = useWatch({ control: form.control, name: "type" });
   const name = useWatch({ control: form.control, name: "name" });
   const { errors, isSubmitting } = form.formState;
+  const watched = useWatch({ control: form.control }) as Field;
+  const converts = field !== null && changesValues(field, watched);
 
   // For the formula preview: the table's fields with this one as currently typed.
   const formulaFields = useMemo(() => [...others, { id: form.getValues("id"), name: name || " ", type: "text" } as Field], [others, form, name]);
 
   const submit = form.handleSubmit(async (values) => {
     try {
-      const { field: saved } = editing ? await updateField(tableId, values) : await createField(tableId, values);
+      const { field: saved } = editing ? await updateField(tableId, values, { locale, timeZone }) : await createField(tableId, values);
       onSaved(saved);
     } catch (error) {
       if (!(error instanceof ApiRequestError)) return form.setError("root", { message: "Couldn't save the field" });
@@ -87,7 +91,6 @@ export function FieldDialog({ tableId, tables, field, previewRows, locale, timeZ
             <select
               aria-label="Type"
               className={inputClass}
-              disabled={editing}
               value={type}
               onChange={(event) =>
                 form.reset(fieldDefaults(event.target.value as FieldType, { id: form.getValues("id"), name: form.getValues("name") }, context), { keepDefaultValues: true })
@@ -99,21 +102,22 @@ export function FieldDialog({ tableId, tables, field, previewRows, locale, timeZ
                 </option>
               ))}
             </select>
-            {editing && <span className="text-xs text-zinc-500">Changing the type isn&apos;t supported yet.</span>}
+
           </label>
 
-          <TypeSettings type={type} editing={editing} original={field} tableId={tableId} tables={tables} />
+          <TypeSettings type={type} editing={editing} tableId={tableId} tables={tables} />
           {type === "formula" && (
             <FormulaEditor tableId={tableId} fieldId={field?.id} fields={formulaFields} previewRows={previewRows} locale={locale} timeZone={timeZone} />
           )}
 
+          {field && <ConversionPreview tableId={tableId} original={field} locale={locale} timeZone={timeZone} />}
           <ErrorText>{errors.root?.message}</ErrorText>
           <div className="flex justify-end gap-2">
             <button type="button" className={secondaryButtonClass} onClick={onClose}>
               Cancel
             </button>
             <button type="submit" className={primaryButtonClass} disabled={isSubmitting}>
-              {isSubmitting ? "Saving…" : editing ? "Save" : "Create field"}
+              {isSubmitting ? "Saving…" : !editing ? "Create field" : converts ? "Convert field" : "Save"}
             </button>
           </div>
         </form>
@@ -123,7 +127,7 @@ export function FieldDialog({ tableId, tables, field, previewRows, locale, timeZ
 }
 
 /** Inputs for the settings of one field type. Registered paths exist only on that member of the union. */
-function TypeSettings({ type, editing, original, tableId, tables }: { type: FieldType; editing: boolean; original: Field | null; tableId: string; tables: BaseTable[] }) {
+function TypeSettings({ type, editing, tableId, tables }: { type: FieldType; editing: boolean; tableId: string; tables: BaseTable[] }) {
   const { register, formState, control } = useFormContext<Field>();
   const errors = formState.errors as Record<string, { message?: string } | undefined>;
   const linkFieldId = useWatch({ control, name: "linkFieldId" }) as string | undefined;
@@ -179,9 +183,8 @@ function TypeSettings({ type, editing, original, tableId, tables }: { type: Fiel
       return (
         <div className="flex flex-col gap-2">
           <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" disabled={editing} {...register("includeTime")} />
+            <input type="checkbox" {...register("includeTime")} />
             Include time
-            {editing && <span className="text-xs text-zinc-500">(can&apos;t be changed: stored values would need converting)</span>}
           </label>
           <label className={labelClass}>
             Time zone (optional; empty shows each viewer their own)
@@ -197,7 +200,7 @@ function TypeSettings({ type, editing, original, tableId, tables }: { type: Fiel
       );
     case "singleSelect":
     case "multiSelect":
-      return <OptionsEditor lockedIds={original && "options" in original ? original.options.map((option) => option.id) : []} />;
+      return <OptionsEditor />;
     case "link":
       return (
         <div className="flex flex-col gap-2">
@@ -212,7 +215,7 @@ function TypeSettings({ type, editing, original, tableId, tables }: { type: Fiel
             </select>
           </label>
           <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" disabled={editing && original?.type === "link" && original.multiple} {...register("multiple")} />
+            <input type="checkbox" {...register("multiple")} />
             Allow linking to several records
           </label>
         </div>
@@ -254,19 +257,16 @@ function TypeSettings({ type, editing, original, tableId, tables }: { type: Fiel
   }
 }
 
-/** Select options; existing ones can be renamed and recoloured but not removed (that needs clearing rows). */
-function OptionsEditor({ lockedIds }: { lockedIds: string[] }) {
+/** Select options. Removing one that's in use empties those cells (the conversion preview counts them). */
+function OptionsEditor() {
   const { control, register, formState } = useFormContext<Field>();
   const { fields: rows, append, remove } = useFieldArray({ control, name: "options" as never });
-  // `rows[i].id` is the field array's own React key; the option's id is in the form values.
-  const options = (useWatch({ control, name: "options" as never }) ?? []) as { id: string }[];
   const errors = (formState.errors as { options?: ({ label?: { message?: string } } | undefined)[] & { message?: string } }).options;
 
   return (
     <fieldset className="flex flex-col gap-1.5">
       <legend className="mb-1 text-sm">Options</legend>
       {rows.map((row, index) => {
-        const id = options[index]?.id;
         return (
           <div key={row.id} className="flex flex-col gap-0.5">
             <div className="flex items-center gap-2">
@@ -275,8 +275,6 @@ function OptionsEditor({ lockedIds }: { lockedIds: string[] }) {
               <button
                 type="button"
                 aria-label={`Remove option ${index + 1}`}
-                disabled={id !== undefined && lockedIds.includes(id)}
-                title={id !== undefined && lockedIds.includes(id) ? "Options in use can't be removed yet" : undefined}
                 className={secondaryButtonClass}
                 onClick={() => remove(index)}
               >

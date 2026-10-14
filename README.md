@@ -73,6 +73,7 @@ npm run lint
 - "+ Add field" → Formula. Type `{Total} - {Prise}`: you get `Unknown field "Prise" at 10` with the spot underlined. Fix it: the result type and a preview on 5 rows appear.
 - Save it as **Net** = `ROUND({Total} * 0.8, 2)`, then edit **Total** to `{Net} + 1`: `Circular reference: Total → Net → Total`.
 - Rename **Qty**: Subtotal still works. Delete **Shipping**: the dialog lists Total as dependent; "Delete anyway", and Total shows `#REF!`.
+- Change a field's type (column menu → Edit field): the dialog shows how many values convert and which become empty, with examples, before "Convert field". Text → single select creates the options from the values. Date ↔ date-time, one link instead of several and removing select options convert the same way. Changing a link's table isn't supported.
 
 ### CSV import (toolbar → "Import CSV", creator only)
 
@@ -94,7 +95,7 @@ npm run lint
 | a 100 000-character string | formulas are limited to 10 000 characters; a 100 000-character text value works (`LEN` is tested) |
 | rename / delete a field a formula uses | keeps working / 409 → confirm → `#REF!` |
 | 3 × 1 000 pasted cells with invalid values; 1 column into 5 | invalid ones highlighted; repeated across the 5 |
-| `text` → `number` type change | not in Core: refused (400) |
+| `text` → `number` where 30% aren't numbers; then back | the preview counts converted / emptied values with examples; after "Convert field" the non-numbers are empty; converting back gives the numbers as text |
 | `2026-03-29 02:30` / `2026-10-25 02:30` in Europe/Berlin | "doesn't exist (clocks skip it)" / the first of the two instants |
 | CSV in Windows-1251 with `;` and BOM; 20 MB | detected; parsed in a worker. Closing the tab mid-import keeps the rows already imported; resuming isn't in Core |
 | filter by a formula that uses a lookup, then edit the linked record | the server recomputes lookups and formulas of linking rows; the filter applies on the next load of the view |
@@ -107,7 +108,6 @@ npm run lint
 
 Planned in this order, with the reason each one waits:
 
-2. **Field type change with preview (2.3).** `PATCH ?preview=1` runs the target coercer over all values (counts and examples), then converts in one transaction. The same goes for `includeTime` and link target changes, which are refused today.
 3. **Grouping, fill handle, undo of row deletion (2.1 Advanced).** Grouping needs group headers in the virtual row model (`[header, rows…]` index mapping).
 5. **Formula editor highlighting and autocomplete; import resume after reload and link columns (2.4 Advanced).** Resume needs the import id and progress in `sessionStorage`, plus the stored batch keys the server already keeps.
 6. **Public form `/f/[viewId]` (2.5).**
@@ -118,5 +118,4 @@ Known limitations:
 - An open cell editor closes if its row scrolls out of the rendered range.
 - Delete and copy of a full column work only for loaded rows (copy fetches the missing ones).
 - Lookups display the target's raw text (not locale-formatted).
-- Removing select options is refused (it would need clearing rows).
 - A schema change remounts the grid, which drops the undo history and the panel's unsaved draft.
