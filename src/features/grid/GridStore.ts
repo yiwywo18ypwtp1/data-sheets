@@ -1,7 +1,7 @@
 import type { Aggregates, RowWindowResponse } from "@/lib/domain/api";
 import type { CellValue } from "@/lib/domain/cell";
 import type { Field } from "@/lib/domain/field";
-import { isConditionComplete, type FilterGroup } from "@/lib/domain/filter";
+import { usesRelativeDates } from "@/lib/domain/filter";
 import { newId } from "@/lib/domain/ids";
 import { MAX_BATCH_OPS, type Row, type RowOp, type RowOpResult } from "@/lib/domain/row";
 import type { RowQuery } from "./api";
@@ -571,12 +571,4 @@ export class GridStore {
     // Keep the old object when nothing changed, so footer cells don't re-render.
     if (JSON.stringify(response.aggregates) !== JSON.stringify(this.aggregates)) this.aggregates = response.aggregates;
   }
-}
-
-const RELATIVE_DATE_OPERATORS = new Set(["isToday", "withinLastDays"]);
-
-/** Whether a filter's result depends on the viewer's "today", i.e. on their time zone. */
-export function usesRelativeDates(filter: FilterGroup): boolean {
-  const conditions = [...filter.conditions, ...filter.groups.flatMap((group) => group.conditions)];
-  return conditions.some((condition) => RELATIVE_DATE_OPERATORS.has(condition.operator) && isConditionComplete(condition));
 }

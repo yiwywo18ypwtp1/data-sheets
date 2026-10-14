@@ -159,6 +159,14 @@ export function isConditionComplete(condition: FilterCondition): boolean {
   return true;
 }
 
+const RELATIVE_DATE_OPERATORS = new Set<FilterOperator>(["isToday", "withinLastDays"]);
+
+/** Whether a filter's result depends on "today", i.e. on the clock and the time zone. */
+export function usesRelativeDates(filter: FilterGroup): boolean {
+  const conditions = [...filter.conditions, ...filter.groups.flatMap((group) => group.conditions)];
+  return conditions.some((condition) => RELATIVE_DATE_OPERATORS.has(condition.operator) && isConditionComplete(condition));
+}
+
 type Issue = { path: (string | number)[]; message: string };
 type ConditionIssue = { key: "fieldId" | "operator" | "value"; message: string };
 

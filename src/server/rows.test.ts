@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { FilterCondition, FilterGroup } from "@/lib/domain/filter";
 import type { Row } from "@/lib/domain/row";
 import type { Sort } from "@/lib/domain/view";
-import { wallTimeAt } from "@/lib/timezone";
+import { wallTimeAt, wallTimeToInstant } from "@/lib/timezone";
 import { getDb } from "./db";
 import { queryRows } from "./rows";
 import { TABLE_IDS } from "./seed";
@@ -146,6 +146,27 @@ describe("queryRows filters", () => {
       (row) => row.values.fld_o_rush === true || (row.values.fld_o_gift === true && (row.values.fld_o_qty as number) > 10),
     );
     expect(ids(result.rows)).toEqual(ids(expected));
+  });
+
+  it("re-evaluates 'today' when midnight passes in the viewer's zone, not just in UTC", () => {
+    const due = String(allRows.find((row) => row.values.fld_o_due && !String(row.values.fld_o_due).endsWith("-01"))!.values.fld_o_due);
+    const [year, month, day] = due.split("-").map(Number);
+    // 23:30 the evening before and 00:30 on the due date in Auckland: the same UTC day (Auckland is UTC+12/13).
+    const evening = wallTimeToInstant({ year, month, day: day - 1, hour: 23, minute: 30, second: 0 }, "Pacific/Auckland")!;
+    const night = wallTimeToInstant({ year, month, day, hour: 0, minute: 30, second: 0 }, "Pacific/Auckland")!;
+    expect(new Date(evening).toISOString().slice(0, 10)).toBe(new Date(night).toISOString().slice(0, 10));
+
+    const dueToday = (now: number) =>
+      queryRows(orders, {
+        filter: { conjunction: "and", conditions: [{ fieldId: "fld_o_due", operator: "isToday" }], groups: [] },
+        sorts: [],
+        offset: 0,
+        limit: ALL,
+        context: { now: new Date(now), timeZone: "Pacific/Auckland" },
+      }).rows.map((row) => row.values.fld_o_due);
+    expect(dueToday(evening)).not.toContain(due);
+    expect(dueToday(night).length).toBeGreaterThan(0);
+    expect(new Set(dueToday(night))).toEqual(new Set([due]));
   });
 
   it("skips incomplete conditions and conditions on deleted fields", () => {

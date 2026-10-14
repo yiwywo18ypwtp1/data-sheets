@@ -3,7 +3,7 @@ import { isValidTimeZone } from "@/lib/domain/field";
 import { EMPTY_FILTER, filterFieldIssues } from "@/lib/domain/filter";
 import { idSchema } from "@/lib/domain/ids";
 import { decodeFilterParam, decodeSortParam } from "@/lib/domain/query";
-import type { Sort } from "@/lib/domain/view";
+import { isSortable, type Sort } from "@/lib/domain/view";
 import { apiRoute, parseSearchParams } from "@/server/api";
 import { getCurrentUser } from "@/server/auth";
 import { now } from "@/server/clock";
@@ -55,6 +55,12 @@ export const GET = apiRoute(async (request, context: RouteContext<"/api/tables/[
   if (query.sort !== undefined) {
     const decoded = decodeSortParam(query.sort);
     if (!decoded) throw invalid("sort", "Invalid sort");
+    // Like the filter: a sort on a missing or unsortable field is a mistake to report, not to ignore.
+    for (const sort of decoded) {
+      const field = table.fields.find((candidate) => candidate.id === sort.fieldId);
+      if (!field) throw invalid("sort", "Field no longer exists");
+      if (!isSortable(field)) throw invalid("sort", "This field can't be sorted");
+    }
     sorts = decoded;
   }
 

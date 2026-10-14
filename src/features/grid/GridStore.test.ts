@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RowWindowResponse } from "@/lib/domain/api";
 import type { Field } from "@/lib/domain/field";
+import { usesRelativeDates } from "@/lib/domain/filter";
 import type { Row, RowOp, RowOpResult } from "@/lib/domain/row";
 import type { RowQuery } from "./api";
-import { BLOCK_SIZE, FETCH_DELAY_MS, GridStore, MAX_BLOCKS, usesRelativeDates, type FetchWindow, type GridStoreOptions, type SendBatch } from "./GridStore";
+import { BLOCK_SIZE, FETCH_DELAY_MS, GridStore, MAX_BLOCKS, type FetchWindow, type GridStoreOptions, type SendBatch } from "./GridStore";
 
 const TOTAL = 5000;
 const baseQuery: RowQuery = { filter: { conjunction: "and", conditions: [], groups: [] }, sorts: [], timeZone: "UTC" };

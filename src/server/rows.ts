@@ -1,7 +1,7 @@
 import "server-only";
 import type { Aggregates, RowWindow } from "@/lib/domain/api";
 import type { Field } from "@/lib/domain/field";
-import type { FilterGroup } from "@/lib/domain/filter";
+import { usesRelativeDates, type FilterGroup } from "@/lib/domain/filter";
 import type { Row } from "@/lib/domain/row";
 import type { TableMeta } from "@/lib/domain/table";
 import type { Sort } from "@/lib/domain/view";
@@ -29,8 +29,9 @@ export type RowQuery = {
  * once and slicing it makes every following window a primary-key lookup of ≤ 500 rows.
  *
  * Invalidation is by key, not by deleting entries: the key includes the table's
- * data version (bumped on every row write) and schema version, so a stale entry
- * can never match again and just ages out of the LRU.
+ * data version (bumped on every row write) and its fields, so a stale entry can never
+ * match again and just ages out of the LRU. Not the table version: that also changes
+ * when any view is saved (a column resize), which doesn't change any result.
  */
 type ResultSet = { ids: string[]; aggregates: Aggregates };
 
@@ -43,10 +44,12 @@ export function markRowsChanged(tableId: string): void {
   dataVersions.set(tableId, (dataVersions.get(tableId) ?? 0) + 1);
 }
 
-function cacheKey(tableId: string, schemaVersion: number, query: RowQuery): string {
-  // "today" filters change at midnight, so the date is part of the key.
-  const today = query.context.now.toISOString().slice(0, 10);
-  return JSON.stringify([tableId, dataVersions.get(tableId) ?? 0, schemaVersion, query.filter, query.sorts, query.context.timeZone, today]);
+/** "Today" filters change at midnight in the field's or viewer's zone; some zones are offset by 30 or 45 minutes. */
+const RELATIVE_DATE_TTL_MS = 15 * 60_000;
+
+function cacheKey(table: Pick<TableMeta, "id" | "fields">, query: RowQuery): string {
+  const clock = usesRelativeDates(query.filter) ? Math.floor(query.context.now.getTime() / RELATIVE_DATE_TTL_MS) : null;
+  return JSON.stringify([table.id, dataVersions.get(table.id) ?? 0, table.fields, query.filter, query.sorts, query.context.timeZone, clock]);
 }
 
 function computeResultSet(tableId: string, fields: Field[], query: RowQuery): ResultSet {
@@ -81,9 +84,9 @@ function computeResultSet(tableId: string, fields: Field[], query: RowQuery): Re
  * One window of rows for the virtualized grid, plus the total and aggregates for the
  * whole filtered set. Filtering and sorting happen in SQLite, never on the client.
  */
-export function queryRows(table: Pick<TableMeta, "id" | "fields" | "version">, query: RowQuery): RowWindow {
+export function queryRows(table: Pick<TableMeta, "id" | "fields">, query: RowQuery): RowWindow {
   const tableId = table.id;
-  const key = cacheKey(tableId, table.version, query);
+  const key = cacheKey(table, query);
   let resultSet = resultCache.get(key);
   if (resultSet) {
     resultCache.delete(key); // re-insert to mark as most recently used
