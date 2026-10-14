@@ -2,6 +2,7 @@ import type { Aggregates, RowWindowResponse } from "@/lib/domain/api";
 import { isConditionComplete, type FilterGroup } from "@/lib/domain/filter";
 import type { Row } from "@/lib/domain/row";
 import type { RowQuery } from "./api";
+import { rangeOf, rowSelectionKey, type Selection } from "./selection";
 
 /**
  * Client state of one open grid: which windows of rows are loaded, the rows
@@ -53,6 +54,8 @@ export class GridStore {
   query: RowQuery;
   total = 0;
   aggregates: Aggregates = {};
+  /** Lives here (not in React state) so only rows whose part of it changes re-render. */
+  selection: Selection | null = null;
 
   constructor({ query, fetchWindow, initialWindow }: GridStoreOptions) {
     this.query = query;
@@ -90,6 +93,22 @@ export class GridStore {
     return this.blocks.size;
   }
 
+  setSelection(selection: Selection | null): void {
+    this.selection = selection;
+    this.notify();
+  }
+
+  getRowSelectionKey(row: number): string {
+    return rowSelectionKey(this.selection, row);
+  }
+
+  /** "left:right" of the selected columns, for highlighting headers; "" if nothing is selected. */
+  getSelectedColumnsKey(): string {
+    if (!this.selection) return "";
+    const { left, right } = rangeOf(this.selection);
+    return `${left}:${right}`;
+  }
+
   /** Called with the rows currently on screen (plus overscan). Loads missing blocks after a short delay. */
   ensureRange(first: number, last: number): void {
     this.wanted = { first, last };
@@ -114,6 +133,8 @@ export class GridStore {
     this.rows.clear();
     this.labels.clear();
     this.query = query;
+    // Row positions mean something else in the new result, so the old selection would point at other rows.
+    this.selection = null;
     this.notify();
     this.loadWanted();
   }

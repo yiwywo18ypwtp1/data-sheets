@@ -164,3 +164,19 @@ describe("usesRelativeDates", () => {
     ).toBe(false);
   });
 });
+
+describe("GridStore selection", () => {
+  it("notifies subscribers and exposes per-row keys; a new query clears it", () => {
+    const store = new GridStore({ query: baseQuery, fetchWindow: async (_q, offset, limit) => windowOf(offset, limit) });
+    const listener = vi.fn();
+    store.subscribe(listener);
+    store.setSelection({ anchor: { row: 3, col: 1 }, focus: { row: 5, col: 2 } });
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(store.getRowSelectionKey(4)).toBe("1:2:0:0:-1");
+    expect(store.getSelectedColumnsKey()).toBe("1:2");
+
+    store.setQuery({ ...baseQuery, sorts: [{ fieldId: "n", direction: "asc" }] });
+    expect(store.selection).toBeNull();
+    expect(store.getRowSelectionKey(4)).toBe("");
+  });
+});

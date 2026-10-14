@@ -3,6 +3,8 @@ import type { RowHeight, View } from "@/lib/domain/view";
 
 export const HEADER_HEIGHT = 34;
 export const FOOTER_HEIGHT = 32;
+/** Row-number column, pinned left of the primary field. */
+export const GUTTER_WIDTH = 52;
 export const ROW_HEIGHTS: Record<RowHeight, number> = { short: 32, medium: 56, tall: 88 };
 
 export type GridColumn = { field: Field; width: number };
