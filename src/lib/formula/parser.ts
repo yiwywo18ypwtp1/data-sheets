@@ -12,8 +12,12 @@ export type Node =
   | { kind: "binary"; operator: BinaryOperator; left: Node; right: Node; start: number }
   | { kind: "call"; name: string; args: Node[]; start: number };
 
-/** Deep nesting is legal (200 brackets must work) but bounded, so a hostile formula can't overflow the stack. */
-export const MAX_NESTING = 256;
+/**
+ * Deep nesting is legal (200 brackets must work) but bounded, so a hostile formula can't
+ * overflow the stack. Each operator in a chain (`1+1+…`) adds a level too: the chain
+ * becomes a left-deep tree that the type checker and evaluator walk recursively.
+ */
+export const MAX_NESTING = 512;
 
 /** Binding power per operator; higher binds tighter. All binary operators are left-associative. */
 const BINDING_POWER: Record<BinaryOperator, number> = {
@@ -71,6 +75,7 @@ export function parse(input: string): Node {
       if (token.type !== "operator") break;
       const power = BINDING_POWER[token.value];
       if (power <= minBindingPower) break;
+      if (++depth >= MAX_NESTING) throw new FormulaSyntaxError("Formula is too long or nested too deeply", token.start);
       next();
       const right = parseExpression(power, depth + 1);
       left = { kind: "binary", operator: token.value, left, right, start: token.start };

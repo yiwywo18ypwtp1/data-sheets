@@ -1,5 +1,5 @@
 import type { CellValue } from "@/lib/domain/cell";
-import type { Field } from "@/lib/domain/field";
+import type { Field, FormulaResultType } from "@/lib/domain/field";
 import { compileStoredFormula, type CompiledFormula } from "./compile";
 import { parseStoredDate } from "./dates";
 import { FUNCTIONS, type EvalContext } from "./functions";
@@ -50,7 +50,19 @@ export function evaluate(formula: CompiledFormula, getValue: (fieldId: string) =
         );
     }
   }
-  return run(formula.ast);
+  return toResultType(run(formula.ast), formula.resultType);
+}
+
+/**
+ * Makes the result match the formula's declared type, which filters and sorting rely on:
+ * `IF(…, "a", 2)` is a text formula, so its 2 is stored as "2". Numbers lose binary
+ * noise (0.1 + 0.2 is 0.3), so a filter `= 4680.65` matches the value the grid shows.
+ */
+function toResultType(value: FormulaValue, resultType: FormulaResultType): FormulaValue {
+  if (value === null || isFormulaError(value)) return value;
+  if (resultType === "text" && typeof value !== "string") return toText(value);
+  if (typeof value === "number") return Number(value.toPrecision(15));
+  return value;
 }
 
 function applyBinary(operator: BinaryOperator, left: PlainValue, right: PlainValue): FormulaValue {

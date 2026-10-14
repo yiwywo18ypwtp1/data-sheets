@@ -3,6 +3,7 @@ import type { CellValue } from "@/lib/domain/cell";
 import type { Field } from "@/lib/domain/field";
 import { compileFormula } from "./compile";
 import { evaluate, evaluateRowFormulas } from "./evaluate";
+import { MAX_NESTING } from "./parser";
 import { fieldByNameResolver } from "./references";
 import { fromCellValue, type FormulaValue } from "./values";
 
@@ -72,8 +73,17 @@ describe("evaluate", () => {
     ['"10" = 10', true],
     ['"b" > "a"', true],
     ["BLANK()", null],
+    ["0.1 + 0.2", 0.3],
+    ["{A} * 468.065", 4680.65],
+    ['IF({A} > 100, "big", {A})', "10"],
+    ['IF({A} > 5, TODAY(), "never")', "2026-10-13"],
   ])("%s = %j", (expression, expected) => {
     expect(run(expression)).toEqual(expected);
+  });
+
+  it("compiles and evaluates the deepest formulas the parser accepts", () => {
+    expect(run(`1${"+1".repeat(MAX_NESTING - 1)}`)).toBe(MAX_NESTING);
+    expect(run(`${"(".repeat(MAX_NESTING - 1)}1${")".repeat(MAX_NESTING - 1)}`)).toBe(1);
   });
 
   it("returns errors as values and propagates them", () => {
