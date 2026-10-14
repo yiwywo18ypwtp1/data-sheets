@@ -117,3 +117,44 @@ export function getRowsByIds(tableId: string, ids: string[]): Row[] {
     return record ? [toRow(record)] : [];
   });
 }
+
+/**
+ * Link cells store row ids; the grid shows the linked records' primary values.
+ * Returns `{ rowId: label }` for every record linked from `rows`, one query per target table.
+ */
+export function linkedRecordLabels(fields: Field[], rows: Row[], primaryFieldOf: (tableId: string) => string | null): Record<string, string> {
+  const idsByTable = new Map<string, Set<string>>();
+  for (const field of fields) {
+    if (field.type !== "link") continue;
+    for (const row of rows) {
+      const ids = row.values[field.id];
+      if (!Array.isArray(ids)) continue;
+      if (!idsByTable.has(field.targetTableId)) idsByTable.set(field.targetTableId, new Set());
+      for (const id of ids) idsByTable.get(field.targetTableId)!.add(id);
+    }
+  }
+
+  const labels: Record<string, string> = {};
+  for (const [tableId, ids] of idsByTable) {
+    const primaryFieldId = primaryFieldOf(tableId);
+    for (const row of getRowsByIds(tableId, [...ids])) {
+      const value = primaryFieldId ? row.values[primaryFieldId] : null;
+      labels[row.id] = value === null || value === undefined ? "Unnamed record" : String(value);
+    }
+  }
+  return labels;
+}
+
+export type RecordOption = { id: string; label: string };
+
+/** Records whose primary value contains `q` (case-insensitive), for the link cell editor. */
+export function searchRecords(tableId: string, primaryFieldId: string, q: string, limit: number): RecordOption[] {
+  const records = getDb()
+    .prepare(
+      `SELECT id, json_extract(cells, ?) AS label FROM rows
+       WHERE table_id = ? AND instr(ulower(coalesce(json_extract(cells, ?), '')), ?) > 0
+       ORDER BY seq LIMIT ?`,
+    )
+    .all(`$."${primaryFieldId}"`, tableId, `$."${primaryFieldId}"`, q.trim().toLowerCase(), limit) as { id: string; label: unknown }[];
+  return records.map((record) => ({ id: record.id, label: record.label === null ? "Unnamed record" : String(record.label) }));
+}

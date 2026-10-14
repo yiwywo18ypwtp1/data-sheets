@@ -33,3 +33,13 @@ export class ApiError extends Error {
 }
 
 export const notFound = (what: string) => new ApiError("NOT_FOUND", 404, `${what} not found`);
+
+/** Zod issues as `{ "path.to.field": message }`, first message per path. */
+export function zodFieldErrors(issues: readonly { path: PropertyKey[]; message: string }[]): Record<string, string> {
+  const fieldErrors: Record<string, string> = {};
+  for (const issue of issues) {
+    const key = issue.path.map(String).join(".") || "_";
+    fieldErrors[key] ??= issue.message;
+  }
+  return fieldErrors;
+}

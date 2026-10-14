@@ -275,3 +275,42 @@ export function applyRowBatch(table: { id: string; baseId: string }, ops: RowOp[
     return results;
   })();
 }
+
+/**
+ * Recomputes the given computed fields, and everything that depends on them, in every
+ * row of every affected table. Used after schema changes: a new or edited formula or
+ * lookup, or a deleted field whose dependents now show `#REF!`.
+ *
+ * The fields are computed in dependency order, split into consecutive runs per table,
+ * so a lookup in Orders that reads a Customers formula sees the new formula values.
+ */
+export function recomputeAllRows(baseId: string, fieldIds: string[]): void {
+  const db = getDb();
+  const batch = new BatchContext(baseId);
+  const affected = new Set([...fieldIds, ...dependentsOf(batch.graph, new Set(fieldIds))]);
+  const order = topologicalOrder(batch.graph, affected).filter((id) => {
+    const field = batch.fields.get(id);
+    return field !== undefined && isComputedField(field);
+  });
+
+  const runs: { tableId: string; fieldIds: string[] }[] = [];
+  for (const id of order) {
+    const tableId = batch.tableOfField.get(id)!;
+    const last = runs.at(-1);
+    if (last?.tableId === tableId) last.fieldIds.push(id);
+    else runs.push({ tableId, fieldIds: [id] });
+  }
+
+  db.transaction(() => {
+    const update = db.prepare("UPDATE rows SET cells = ?, errors = ?, rev = rev + 1, updated_at = ? WHERE id = ?");
+    for (const run of runs) {
+      const records = db.prepare("SELECT * FROM rows WHERE table_id = ?").all(run.tableId) as RowRecord[];
+      for (const record of records) {
+        const row = toRow(record);
+        const computed = computeFields(run.fieldIds, { values: row.values, errors: row.errors ?? {} }, batch.fields, batch.formulas, readLinked, batch.evalContext);
+        update.run(serializeCells(computed.values), serializeErrors(computed.errors), batch.timestamp, record.id);
+      }
+      markRowsChanged(run.tableId);
+    }
+  })();
+}

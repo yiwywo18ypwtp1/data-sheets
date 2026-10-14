@@ -11,7 +11,7 @@ export const fieldNameSchema = z
 
 export const MAX_FORMULA_LENGTH = 10_000;
 
-function isValidTimeZone(timeZone: string): boolean {
+export function isValidTimeZone(timeZone: string): boolean {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone });
     return true;
