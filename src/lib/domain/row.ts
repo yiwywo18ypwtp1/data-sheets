@@ -2,10 +2,15 @@ import { z } from "zod";
 import { cellValueSchema } from "./cell";
 import { idSchema } from "./ids";
 
-/** `rev` grows by one on every write and is used to detect concurrent edits of the same row. */
+/**
+ * `rev` grows by one on every write and is used to detect concurrent edits of the same row.
+ * `errors` is an addition to the task's Row type: a formula that fails (`#DIV/0!`) stores
+ * `null` in `values`, so filters treat it as empty, and the message here, so the grid can show it.
+ */
 export const rowSchema = z.object({
   id: idSchema,
   values: z.record(idSchema, cellValueSchema),
+  errors: z.record(idSchema, z.string()).optional(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
   rev: z.number().int().nonnegative(),
