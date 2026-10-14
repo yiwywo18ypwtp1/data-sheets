@@ -25,11 +25,15 @@ export function useViewLayout(view: View, version: number, canSave: boolean) {
   const [error, setError] = useState<string | null>(null);
   const saved = useRef({ view, version });
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const unsaved = useRef<ViewLayout | null>(null);
   const inFlight = useRef(false);
   const queued = useRef<ViewLayout | null>(null);
 
+  // Switching views right after a resize unmounts the grid: save now instead of dropping the change.
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current);
+    if (unsaved.current) void save(unsaved.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once on unmount; `save` only reads refs
   }, []);
 
   async function save(next: ViewLayout): Promise<void> {
@@ -67,7 +71,12 @@ export function useViewLayout(view: View, version: number, canSave: boolean) {
     setLayout(next);
     if (!canSave) return;
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => void save(next), SAVE_DELAY_MS);
+    unsaved.current = next;
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      unsaved.current = null;
+      void save(next);
+    }, SAVE_DELAY_MS);
   }
 
   return { layout, update, error };

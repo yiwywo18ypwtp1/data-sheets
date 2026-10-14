@@ -13,7 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "next typegen && tsc --noEmit",
-    "test:tz": "TZ=Pacific/Auckland vitest run && TZ=America/Los_Angeles vitest run",
+    "test:tz": "TZ=Pacific/Auckland vitest run; auckland=$?; TZ=America/Los_Angeles vitest run; la=$?; exit $((auckland || la))",
     "db:reset": "rm -f data/data-sheets.db data/data-sheets.db-wal data/data-sheets.db-shm"
   },
   "dependencies": {
