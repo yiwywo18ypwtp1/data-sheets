@@ -169,12 +169,22 @@ function Others({ store }: { store: GridStore }) {
 function ConnectionStatus({ store, realtimeStatus }: { store: GridStore; realtimeStatus: RealtimeStatus }) {
   const connection = useGridStore(store, (state) => state.connection);
   const unsent = useGridStore(store, (state) => state.unsentCount);
-  const offline = connection === "offline";
+  const copy = useGridStore(store, (state) => state.readingCopy);
+  const offline = connection === "offline" || copy !== null;
   const live = realtimeStatus === "live" && !offline;
+  const waiting = unsent > 0 ? ` · ${unsent.toLocaleString()} ${unsent === 1 ? "change" : "changes"} waiting` : "";
   return (
-    <span role="status" className={`flex items-center gap-1.5 text-xs ${live ? "text-zinc-500" : "text-amber-700 dark:text-amber-400"}`}>
+    <span role="status" title={copy ? `Rows saved on this device ${copy.toLocaleString()}` : undefined} className={`flex items-center gap-1.5 text-xs ${live ? "text-zinc-500" : "text-amber-700 dark:text-amber-400"}`}>
       <span aria-hidden className={`size-2 rounded-full ${live ? "bg-green-500" : "animate-pulse bg-amber-500"}`} />
-      {offline ? `Offline · ${unsent.toLocaleString()} ${unsent === 1 ? "change" : "changes"} waiting` : realtimeStatus === "live" ? "Live" : realtimeStatus === "connecting" ? "Connecting…" : "Reconnecting…"}
+      {copy && connection !== "offline"
+        ? `Offline · saved copy${waiting}`
+        : offline
+          ? `Offline${waiting}`
+          : realtimeStatus === "live"
+            ? "Live"
+            : realtimeStatus === "connecting"
+              ? "Connecting…"
+              : "Reconnecting…"}
     </span>
   );
 }

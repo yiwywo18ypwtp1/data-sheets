@@ -2,7 +2,7 @@
 
 A simplified Airtable: typed columns, an editable virtualized grid over 50 000 rows, formulas with a dependency graph, saved views and a CSV import wizard. Built with Next.js 16 (App Router), React 19, TypeScript strict and SQLite. The task statement is in [frontend-task-data-sheets.md](frontend-task-data-sheets.md); design decisions and measurements are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-**Scope: Core and Advanced.** Bonus isn't done; the limitations are listed [at the end](#not-done).
+**Scope: Core, Advanced and Bonus** (kanban, cell history, streamed CSV export, offline mode, comments with mentions). The limitations are listed [at the end](#not-done).
 
 ## Running it
 
@@ -120,7 +120,7 @@ npm run lint
 
 ## Not done
 
-- **Bonus** (kanban, cell history, CSV export, offline with IndexedDB, comments): not started.
+- **Bonus** is implemented but has no Playwright scenarios, and the offline mode (service worker, IndexedDB outbox and row copies) was only unit-tested, not driven in a browser. Offline works for tables opened before; unsent edits are taken over by the next tab through Web Locks.
 
 Known limitations:
 - Footer sums update on the next window load, not on every edit.

@@ -15,7 +15,9 @@ import { FieldDialog, type BaseTable } from "@/features/fields/FieldDialog";
 import { RecordPanel, recordFields, type RecordTab } from "@/features/records/RecordPanel";
 import { useOpenRecord } from "@/features/records/useOpenRecord";
 import { ViewPanel } from "@/features/view-panel/ViewPanel";
-import { download, exportCsvUrl, fetchRowWindow, sendRowBatch } from "./api";
+import { Outbox } from "@/features/offline/outbox";
+import { withOfflineCopy } from "@/features/offline/windowCache";
+import { download, exportCsvUrl, fetchRowWindow, getClientId, sendRowBatch } from "./api";
 import { CellMenu } from "./CellMenu";
 import { GridFooter } from "./GridFooter";
 import { GridHeader } from "./GridHeader";
@@ -76,17 +78,40 @@ const INITIAL_RECT = { width: 1280, height: 800 };
  * they scroll in and out of view.
  */
 export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, linkFilterError, importHref, tableName, fields, primaryFieldId, view, viewVersion, initialWindow, initialRecordId, currentUser }: GridProps) {
-  const [store] = useState(
-    () =>
-      new GridStore({
-        query: { filter: linkFilter ?? view.filter, sorts: view.sorts, groupBy: (view.groupBy ?? []).map((group) => group.fieldId), timeZone: "UTC" },
-        fields,
-        fetchWindow: (query, offset, limit, signal, withGroups) => fetchRowWindow(tableId, query, offset, limit, signal, withGroups),
-        sendBatch: (ops) => sendRowBatch(tableId, ops),
-        initialWindow,
-      }),
-  );
+  const [store] = useState(() => {
+    const created: GridStore = new GridStore({
+      query: { filter: linkFilter ?? view.filter, sorts: view.sorts, groupBy: (view.groupBy ?? []).map((group) => group.fieldId), timeZone: "UTC" },
+      fields,
+      // Offline, windows come from the copy kept in IndexedDB (see offline/windowCache.ts).
+      fetchWindow: (query, offset, limit, signal, withGroups) =>
+        withOfflineCopy(tableId, JSON.stringify(["rows", query, offset, limit, withGroups === true]), () => fetchRowWindow(tableId, query, offset, limit, signal, withGroups), {
+          onCopy: (savedAt) => created.setReadingCopy(savedAt),
+          onFresh: () => created.setReadingCopy(null),
+        }),
+      sendBatch: (ops) => sendRowBatch(tableId, ops),
+      initialWindow,
+    });
+    return created;
+  });
   useEffect(() => () => store.dispose(), [store]);
+
+  // Unsent edits are kept in IndexedDB, and edits an earlier session couldn't send are taken over.
+  useEffect(() => {
+    const outbox = new Outbox(tableId, `${getClientId()}:${tableId}:${crypto.randomUUID().slice(0, 8)}`);
+    let active = true;
+    store.setPersistence((edits) => outbox.save(edits));
+    void outbox
+      .start()
+      .then(() => outbox.adoptOrphans())
+      .then((edits) => {
+        if (active && edits.length > 0) store.adoptEdits(edits);
+      });
+    return () => {
+      active = false;
+      store.setPersistence(null);
+      outbox.dispose();
+    };
+  }, [store, tableId]);
 
   const { locale, timeZone } = useViewerLocale();
   useEffect(() => store.setTimeZone(timeZone), [store, timeZone]);

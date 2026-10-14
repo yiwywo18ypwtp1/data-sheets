@@ -20,6 +20,12 @@ export type PendingEdit = {
   values: Record<string, CellValue>;
   /** A create that brings back a deleted record (undo): its original creation time, which keeps its place. */
   restoreCreatedAt?: string;
+  /**
+   * Taken over from an earlier session's offline queue (see offline/outbox.ts): `rev` is
+   * the record's revision then. That session may have sent it already before it closed,
+   * so "already exists" (create) and "not found" (delete) mean it got there.
+   */
+  adopted?: { rev: number };
 };
 
 /** A row as displayed: may carry per-cell save errors, a "still saving" and a "being deleted" flag. */

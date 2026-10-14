@@ -21,6 +21,7 @@ import { notifyMention } from "@/features/records/mentions";
 import { RecordPanel, recordFields } from "@/features/records/RecordPanel";
 import { useOpenRecord } from "@/features/records/useOpenRecord";
 import { ViewPanel } from "@/features/view-panel/ViewPanel";
+import { withOfflineCopy } from "@/features/offline/windowCache";
 import { fetchKanban } from "./api";
 import { appendCards, findCard, moveCard, neighbourKey, replaceCard, type Columns } from "./board";
 import { KanbanColumn } from "./KanbanColumn";
@@ -69,6 +70,8 @@ export function Kanban({ tableId, tableName, fields, primaryFieldId, view, viewV
   const query = useMemo(() => ({ ...filterAndSorts, timeZone: relative ? timeZone : "UTC" }), [filterAndSorts, relative, timeZone]);
   const [panelOpen, setPanelOpen] = useState(linkFilter !== null || linkFilterError !== null);
   const [status, setStatus] = useState<RealtimeStatus>("connecting");
+  /** Set while the board shows the copy saved on this device (the server can't be reached). */
+  const [copyAt, setCopyAt] = useState<Date | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [dragging, setDragging] = useState<string | null>(null);
   const [over, setOver] = useState<string | null | undefined>(undefined);
@@ -94,7 +97,10 @@ export function Kanban({ tableId, tableName, fields, primaryFieldId, view, viewV
     const limit = Math.min(500, Math.max(PAGE, ...shown.map((column) => column.rows.length)));
     const ticket = ++generation.current;
     try {
-      const response = await fetchKanban(tableId, current, stackBy, { limit });
+      const response = await withOfflineCopy(tableId, JSON.stringify(["kanban", current, stackBy]), () => fetchKanban(tableId, current, stackBy, { limit }), {
+        onCopy: setCopyAt,
+        onFresh: () => setCopyAt(null),
+      });
       if (ticket !== generation.current || pendingWrites.current > 0) return;
       setColumns(response.columns);
       setLabels((known) => ({ ...known, ...response.linkedLabels }));
@@ -302,9 +308,9 @@ export function Kanban({ tableId, tableName, fields, primaryFieldId, view, viewV
           Export CSV
         </button>
         <span className="ml-auto text-xs text-zinc-500">{total.toLocaleString()} records</span>
-        <span role="status" className={`flex items-center gap-1.5 text-xs ${live ? "text-zinc-500" : "text-amber-700 dark:text-amber-400"}`}>
-          <span aria-hidden className={`size-2 rounded-full ${live ? "bg-green-500" : "animate-pulse bg-amber-500"}`} />
-          {live ? "Live" : status === "connecting" ? "Connecting…" : "Reconnecting…"}
+        <span role="status" title={copyAt ? `Cards saved on this device ${copyAt.toLocaleString()}` : undefined} className={`flex items-center gap-1.5 text-xs ${live && !copyAt ? "text-zinc-500" : "text-amber-700 dark:text-amber-400"}`}>
+          <span aria-hidden className={`size-2 rounded-full ${live && !copyAt ? "bg-green-500" : "animate-pulse bg-amber-500"}`} />
+          {copyAt ? "Offline · saved copy" : live ? "Live" : status === "connecting" ? "Connecting…" : "Reconnecting…"}
         </span>
       </div>
       <ViewPanel

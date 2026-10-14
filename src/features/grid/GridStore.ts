@@ -8,6 +8,7 @@ import type { RowQuery } from "./api";
 import { History, type DeletedRow, type HistoryChange, type HistoryEntry } from "./history";
 import { GroupLayout } from "./groupLayout";
 import { buildFormulaContext, displayRow, type DisplayRow, type FormulaContext, type PendingEdit } from "./optimistic";
+import type { OutboxEdit } from "@/features/offline/outbox";
 import type { PresenceEntry, RowChange } from "./realtime";
 import { rangeOf, rowSelectionKey, type Selection } from "./selection";
 
@@ -88,7 +89,11 @@ export class GridStore {
   private saveErrors = new Map<string, Record<string, string>>();
   private display = new Map<string, DisplayRow>();
   private queue: PendingEdit[] = [];
+  /** The batch on its way to the server. */
+  private sending: PendingEdit[] = [];
   private inFlight = false;
+  /** Called whenever the edits waiting for the server change, to keep them in IndexedDB. */
+  private persistPending: ((edits: OutboxEdit[]) => void) | null = null;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private nextOpId = 1;
   private readonly history = new History();
@@ -129,6 +134,8 @@ export class GridStore {
   announcementId = 0;
   /** Whether writes reach the server; "offline" while a failed batch waits to be sent again. */
   connection: "online" | "offline" = "online";
+  /** When the rows on screen came from the offline copy (the server couldn't be reached): when that copy was saved. */
+  readingCopy: Date | null = null;
   /** Other people on this table (one entry per user), for the avatars. */
   others: PresenceEntry[] = [];
   /** A paste waiting for the user to decide about extra rows (shown by the toolbar). */
@@ -431,10 +438,52 @@ export class GridStore {
     this.pending.set(edit.rowId, [...(this.pending.get(edit.rowId) ?? []), edit]);
     this.queue.push(edit);
     this.refreshRow(edit.rowId);
+    this.persist();
     this.flushTimer ??= setTimeout(() => {
       this.flushTimer = null;
       void this.flush();
     }, 0);
+  }
+
+  // ---- offline queue -------------------------------------------------------------
+
+  /** Keeps the unsent edits somewhere that outlives the page (offline/outbox.ts); null stops it. */
+  setPersistence(persist: ((edits: OutboxEdit[]) => void) | null): void {
+    this.persistPending = persist;
+    this.persist();
+  }
+
+  /** Everything not confirmed yet, in the order it will reach the server. */
+  get unsentEdits(): OutboxEdit[] {
+    return [...this.sending, ...this.queue].map((edit) => ({
+      op: edit.op,
+      rowId: edit.rowId,
+      values: edit.values,
+      rev: this.rows.get(edit.rowId)?.rev ?? edit.adopted?.rev ?? 0,
+      ...(edit.restoreCreatedAt ? { restoreCreatedAt: edit.restoreCreatedAt } : {}),
+    }));
+  }
+
+  private persist() {
+    this.persistPending?.(this.unsentEdits);
+  }
+
+  /**
+   * Edits left unsent by an earlier session (a tab closed while offline): queued before
+   * anything new, shown on the rows they touch as those load, and sent like any other.
+   * New records come back at the bottom of the grid, as when they were added.
+   */
+  adoptEdits(edits: OutboxEdit[]): void {
+    if (edits.length === 0) return;
+    for (const edit of edits) {
+      if (edit.op === "create" && !edit.restoreCreatedAt && !this.rows.has(edit.rowId)) {
+        const now = new Date().toISOString();
+        this.rows.set(edit.rowId, { id: edit.rowId, values: edit.values, createdAt: now, updatedAt: now, rev: 0 });
+        this.localRows.push(edit.rowId);
+      }
+      this.enqueue({ opId: this.nextOpId++, op: edit.op, rowId: edit.rowId, values: edit.values, adopted: { rev: edit.rev }, ...(edit.restoreCreatedAt ? { restoreCreatedAt: edit.restoreCreatedAt } : {}) });
+    }
+    this.announce(`Sending ${edits.length} ${edits.length === 1 ? "change" : "changes"} saved while offline`);
   }
 
   /** Whether any edit is still waiting for the server. */
@@ -449,6 +498,7 @@ export class GridStore {
   private async flush(): Promise<void> {
     if (this.inFlight || this.queue.length === 0) return;
     const batch = this.queue.splice(0, MAX_BATCH_OPS);
+    this.sending = batch;
     this.inFlight = true;
 
     let results: RowOpResult[];
@@ -456,11 +506,13 @@ export class GridStore {
       results = await this.sendBatch(batch.map((edit) => this.toRowOp(edit)));
     } catch (error) {
       this.inFlight = false;
+      this.sending = [];
       if (isTransient(error)) return this.waitAndResend(batch);
       const message = error instanceof Error ? error.message : "Request failed";
       results = batch.map((edit) => ({ ok: false, rowId: edit.rowId, error: { code: "REQUEST_FAILED", message: `Not saved: ${message}` } }));
     }
     this.inFlight = false;
+    this.sending = [];
     if (this.connection === "offline") {
       this.connection = "online";
       this.retryDelay = 0;
@@ -473,6 +525,7 @@ export class GridStore {
     if (failed > 0) this.announce(`${failed} ${failed === 1 ? "change" : "changes"} couldn't be saved`);
     // Deleted rows leave holes in the loaded windows, restored ones need their place: load them again.
     if (batch.some((edit, i) => (edit.op === "delete" || edit.restoreCreatedAt) && results[i]?.ok)) this.reload();
+    this.persist();
     this.notify();
     if (this.queue.length > 0) void this.flush();
   }
@@ -488,6 +541,7 @@ export class GridStore {
     this.connection = "offline";
     this.retryDelay = Math.min(30_000, Math.max(1000, this.retryDelay * 2));
     this.retryTimer = setTimeout(() => this.resendNow(), this.retryDelay);
+    this.persist();
     this.notify();
   }
 
@@ -498,13 +552,20 @@ export class GridStore {
     void this.flush();
   }
 
+  /** Rows came from the offline copy (a date) or from the server again (null). */
+  setReadingCopy(savedAt: Date | null): void {
+    if ((savedAt === null) === (this.readingCopy === null)) return;
+    this.readingCopy = savedAt;
+    this.notify();
+  }
+
   /** Edits not yet confirmed by the server, for the connection indicator. */
   get unsentCount(): number {
     return this.queue.length;
   }
 
   private toRowOp(edit: PendingEdit): RowOp {
-    const rev = this.rows.get(edit.rowId)?.rev ?? 0;
+    const rev = this.rows.get(edit.rowId)?.rev ?? edit.adopted?.rev ?? 0;
     if (edit.op === "create") return { op: "create", rowId: edit.rowId, values: edit.values, ...(edit.restoreCreatedAt ? { createdAt: edit.restoreCreatedAt } : {}) };
     if (edit.op === "delete") return { op: "delete", rowId: edit.rowId, rev };
     return { op: "update", rowId: edit.rowId, values: edit.values, rev };
@@ -512,6 +573,10 @@ export class GridStore {
 
   /** Confirms or rolls back one edit. A rollback only drops this edit: other pending edits stay applied. */
   private settle(edit: PendingEdit, result: RowOpResult | undefined) {
+    // An adopted edit the earlier session had sent already: it's done.
+    if (edit.adopted && result && !result.ok && ((edit.op === "create" && result.error.code === "CONFLICT") || (edit.op === "delete" && result.error.code === "NOT_FOUND"))) {
+      result = { ok: true, rowId: edit.rowId, row: null };
+    }
     this.pending.set(edit.rowId, (this.pending.get(edit.rowId) ?? []).filter((candidate) => candidate !== edit));
     if (this.pending.get(edit.rowId)!.length === 0) this.pending.delete(edit.rowId);
 
