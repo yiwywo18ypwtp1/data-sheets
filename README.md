@@ -1,31 +1,111 @@
 # Data Sheets
 
-A simplified Airtable built with Next.js App Router. The task statement is in [frontend-task-data-sheets.md](frontend-task-data-sheets.md).
+A simplified Airtable: typed columns, an editable virtualized grid over 50 000 rows, formulas with a dependency graph, saved views and a CSV import wizard. Built with Next.js 16 (App Router), React 19, TypeScript strict and SQLite. The task statement is in [frontend-task-data-sheets.md](frontend-task-data-sheets.md); design decisions and measurements are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Requirements
+**Scope: Core.** What's not done is listed [at the end](#not-done), with a plan.
 
-- Node.js 22 or newer (see `.nvmrc`; run `nvm use`). On older Node the native SQLite
-  module crashes the server silently, so `npm run dev/build/start` refuse to start there.
+## Running it
 
-## Scripts
+Requires **Node.js 22+** (`nvm use` reads `.nvmrc`). On older Node the native SQLite module crashes the server silently, so the scripts refuse to start.
 
 ```bash
 npm install
-npm run dev        # start the dev server
-npm test           # run unit tests (Vitest)
-npm run test:tz    # run unit tests in Pacific/Auckland and America/Los_Angeles
-npm run typecheck  # tsc --noEmit
-npm run lint
-npm run db:reset   # delete the local SQLite database; it is re-created and re-seeded on the next request
+npm run dev            # http://localhost:3000, redirects to Orders
+# or a production build:
+npm run build && npm start
 ```
 
-## Data
+On first start the database `data/data-sheets.db` is created and seeded. That takes about 1.5 s: 3 linked tables (Orders 50 000 × 30 fields, Customers 5 000, Products 500), 5 formulas, 2 lookups and 3 views per table. `npm run db:reset` deletes it, and the next request seeds it again.
 
-The app uses a local SQLite database at `data/data-sheets.db` (override with `DATABASE_PATH`).
-On first use it is seeded with deterministic demo data: Orders (50 000 rows × 30 fields),
-Customers (5 000) and Products (500), linked to each other, with 5 formulas, 2 lookups and
-3 views per table. `SEED_SCALE=0.1` seeds a tenth of the rows for quicker local runs.
+Users are switched on **/settings** (a cookie): Cora Creator (creator, the default), Eddie Editor (editor: edits records and saves views) and Vera Viewer (viewer: read-only). The server checks the role on every write; the UI only hides what you can't do.
 
-Users (switch on `/settings`): Cora Creator (creator, the default), Eddie Editor (editor), Vera Viewer (viewer).
+### Environment
 
-Full setup, env variables and manual check instructions will be added as features land.
+| Variable | Default | Effect |
+|---|---|---|
+| `DATABASE_PATH` | `data/data-sheets.db` | SQLite file (`:memory:` in tests) |
+| `SEED_SCALE` | `1` | Row-count multiplier for the seed, e.g. `0.1` for a quick start |
+| `MOCK_LATENCY_MS` | `0` | Delay added to every `/api` request |
+| `MOCK_FAILURE_RATE` | `0` | Share (0–1) of `/api` requests that fail with 503 `MOCK_FAILURE` |
+| `MOCK_NOW` | real clock | Pins "now" for `TODAY()` and "today" filters (ISO date-time) |
+| `REALTIME_DROP_RATE` | — | Not used: realtime is not implemented |
+
+### Scripts
+
+```bash
+npm test            # unit + API tests (Vitest), ~0.7 s
+npm run test:tz     # the same in Pacific/Auckland and America/Los_Angeles (both always run)
+npm run typecheck   # next typegen + tsc --noEmit
+npm run lint
+```
+
+## Checking it by hand
+
+### The grid (`/b/bas_demo/tbl_orders/viw_orders_all`)
+
+- **Scrolling.** Scroll to the end: rows load in windows of 100 (DevTools → Network: `rows?offset=…&limit=100`), the first column and the header stay put, and the footer shows the count and sums.
+- **Selection and keys.** Click, then shift-click or Shift+arrows. Click a header for a column, a row number for a row. Arrows, Tab, Enter (edit / commit and move down), Escape, typing to replace, Delete for a range, Cmd/Ctrl+Home/End, PageUp/PageDown.
+- **Editors.** Number "1 234,5" (uk-UA locale), dates in the field's zone, select with search, link with record search. An invalid value keeps the editor open with the reason.
+- **Copy and paste.** Copy a range and paste it into Google Sheets, then back. Paste one column into a 5-column selection and it's repeated. Pasting past the last row offers to add rows. Values that can't be converted get a red frame and a tooltip; they are never emptied silently.
+- **Undo.** Cmd+Z undoes a whole paste in one step, Shift+Cmd+Z redoes it. Edit row 1, scroll to the end, press Cmd+Z: the edit is undone and the grid scrolls back to it.
+- **Failures.** Restart with `MOCK_FAILURE_RATE=0.5` and edit a few cells: failed cells roll back with a frame, the others keep their edits.
+- **Rows and columns.** "+ Add record"; select rows and delete them. Column menu (⋯): move, hide. Drag a header edge to resize. Order, widths and hidden fields are saved to the view at once.
+
+### Views: "Filter & sort"
+
+- Add conditions and a condition group (AND/OR). The operators depend on the field type. Changing the field resets the operator and value; switching "contains" → "is" keeps the text.
+- The grid follows after 300 ms. "between" with min > max shows an error and isn't applied.
+- "Unsaved view changes" appears with Save view / Reset. Save, reload: the same view. Viewers can filter but not save.
+
+### Fields and formulas (as a creator)
+
+- "+ Add field" → Formula. Type `{Total} - {Prise}`: you get `Unknown field "Prise" at 10` with the spot underlined. Fix it: the result type and a preview on 5 rows appear.
+- Save it as **Net** = `ROUND({Total} * 0.8, 2)`, then edit **Total** to `{Net} + 1`: `Circular reference: Total → Net → Total`.
+- Rename **Qty**: Subtotal still works. Delete **Shipping**: the dialog lists Total as dependent; "Delete anyway", and Total shows `#REF!`.
+
+### CSV import (toolbar → "Import CSV", creator only)
+
+- A Windows-1251 file with `;` (or UTF-8 with BOM): the encoding and delimiter are detected and can be overridden; the first 50 rows are shown. Files over 20 MB are refused before reading.
+- Columns are matched to fields by name. Two columns can't go into one field. New fields get a suggested type.
+- The check step lists invalid values. Fix one in place, then choose "skip rows" or "import as empty". The result shows imported / skipped / imported with empty values / rejected, plus a CSV report.
+- A 20 MB file (about 180 000 rows) parses in a worker with progress. Cancel during the import and continue: no row is imported twice (each batch has an idempotency key).
+
+### Edge cases from section 8
+
+| Case | Result |
+|---|---|
+| `?filter=garbage`, `offset=-1`, `limit=100000` on `/api/tables/tbl_orders/rows` | 400 with `fieldErrors` |
+| a view of another table: `/b/bas_demo/tbl_orders/viw_customers_all` or `rows?viewId=viw_customers_all` | 404 (real status for pages too, see `src/proxy.ts`) |
+| `{A} / 0`, `IF({Empty}, 1)` | `#DIV/0!` in the cell; empty |
+| a cycle through three fields | refused on save with the path |
+| a field of another table in a formula | `Unknown field` (use a lookup) |
+| 200 nested brackets / `1+1+…` of 10 000 characters | works / refused with a position, no stack overflow |
+| a 100 000-character string | formulas are limited to 10 000 characters; a 100 000-character text value works (`LEN` is tested) |
+| rename / delete a field a formula uses | keeps working / 409 → confirm → `#REF!` |
+| 3 × 1 000 pasted cells with invalid values; 1 column into 5 | invalid ones highlighted; repeated across the 5 |
+| `text` → `number` type change | not in Core: refused (400) |
+| `2026-03-29 02:30` / `2026-10-25 02:30` in Europe/Berlin | "doesn't exist (clocks skip it)" / the first of the two instants |
+| CSV in Windows-1251 with `;` and BOM; 20 MB | detected; parsed in a worker. Closing the tab mid-import keeps the rows already imported; resuming isn't in Core |
+| filter by a formula that uses a lookup, then edit the linked record | the server recomputes lookups and formulas of linking rows; the filter applies on the next load of the view |
+| scroll to the end, Cmd+Z | undoes the early edit and scrolls to it |
+| two tabs, realtime, `REALTIME_DROP_RATE`, public form | not implemented (Advanced) |
+
+## Not done
+
+Planned in this order, with the reason each one waits:
+
+1. **Realtime and conflicts (2.6).** SSE `GET /api/tables/:id/events?since=` from an event log table written in the same transaction as each batch. The grid store applies remote row changes to loaded blocks. A `rev` mismatch on the same cell shows a toast with "keep mine". This also gives presence and the drop/replay test.
+2. **Field type change with preview (2.3).** `PATCH ?preview=1` runs the target coercer over all values (counts and examples), then converts in one transaction. The same goes for `includeTime` and link target changes, which are refused today.
+3. **Grouping, fill handle, undo of row deletion (2.1 Advanced).** Grouping needs group headers in the virtual row model (`[header, rows…]` index mapping).
+4. **Filter in the URL and drag-and-drop sorts (2.2 Advanced).** `encodeFilterParam` already exists and is used by the API.
+5. **Formula editor highlighting and autocomplete; import resume after reload and link columns (2.4 Advanced).** Resume needs the import id and progress in `sessionStorage`, plus the stored batch keys the server already keeps.
+6. **Public form `/f/[viewId]` (2.5).**
+7. **RTL and Playwright tests.** The pure logic is unit-tested (formulas, coercion, filters, mapping, the grid store, undo, selection, the API). The UI flows were checked with ad-hoc Playwright scripts, not committed tests.
+
+Known limitations:
+- Footer sums update on the next window load, not on every edit.
+- An open cell editor closes if its row scrolls out of the rendered range.
+- Delete and copy of a full column work only for loaded rows (copy fetches the missing ones).
+- Lookups display the target's raw text (not locale-formatted).
+- Removing select options is refused (it would need clearing rows).
+- A schema change remounts the grid, which drops the undo history and the panel's unsaved draft.
