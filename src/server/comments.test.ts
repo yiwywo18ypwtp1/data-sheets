@@ -11,6 +11,8 @@ let userId = "usr_creator";
 vi.mock("next/headers", () => ({
   cookies: async () => ({ get: (name: string) => (name === "ds_user" ? { value: userId } : undefined) }),
 }));
+// Route handlers that only read the cookie call `connection()`, which needs a real request scope.
+vi.mock("next/server", async (original) => ({ ...(await original<typeof import("next/server")>()), connection: async () => undefined }));
 beforeEach(() => {
   userId = "usr_creator";
 });
