@@ -1,17 +1,17 @@
 import Link from "next/link";
 import Papa from "papaparse";
 import { useEffect, useRef, useState } from "react";
-import { createCoercer } from "@/lib/coerce/coerce";
 import type { CellValue } from "@/lib/domain/cell";
 import type { Field } from "@/lib/domain/field";
 import { newId } from "@/lib/domain/ids";
-import { rowInput } from "@/lib/import/mapping";
+import { coercerFor, NEW_RECORD_PREFIX, rowInput } from "@/lib/import/mapping";
 import { createField } from "@/features/fields/api";
-import { ApiRequestError } from "@/features/grid/api";
+import { ApiRequestError, sendRowBatch } from "@/features/grid/api";
 import { importRowsAction } from "./actions";
 import { buttonClass, primaryButtonClass } from "./styles";
+import type { ImportProgress, ReportLine } from "./session";
 import type { ParsedCsv } from "./UploadStep";
-import type { ErrorStrategy, Validation } from "./ValidateStep";
+import { linkMatchers, type ErrorStrategy, type Validation } from "./ValidateStep";
 
 const BATCH_ROWS = 500;
 /** Server Actions accept 4 MB here (next.config.ts); a batch of wide rows is cut earlier. */
@@ -19,9 +19,11 @@ const BATCH_BYTES = 3 * 1024 * 1024;
 const ATTEMPTS = 3;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-type ReportLine = { row: number; outcome: "skipped" | "imported with empty values" | "rejected by the server"; column: string; value: string; problem: string };
 
-type Progress = { nextRow: number; batchIndex: number; imported: number; skipped: number; emptied: number; rejected: number };
+type Progress = ImportProgress;
+
+/** Where an interrupted import stopped (from the saved session). */
+export type ResumeState = { importId: string; progress: ImportProgress; report: ReportLine[]; fieldsCreated: boolean };
 
 type Phase = { kind: "ready" } | { kind: "running" } | { kind: "cancelled" } | { kind: "failed"; message: string } | { kind: "done" };
 
@@ -36,6 +38,10 @@ type ImportStepProps = {
   timeZone: string;
   viewHref: string;
   onBack: () => void;
+  /** Continue an interrupted import instead of starting one. */
+  resume: ResumeState | null;
+  /** Saves the import's state after each batch (for resuming after a reload); `null` when it finished. */
+  onCheckpoint: (state: ResumeState | null) => void;
 };
 
 /**
@@ -45,12 +51,14 @@ type ImportStepProps = {
  * cancel or a failure picks up at the next batch. Progress lives in a ref: it's advanced
  * by an async loop, not by renders.
  */
-export function ImportStep({ tableId, csv, validation, strategy, newFields, locale, timeZone, viewHref, onBack }: ImportStepProps) {
-  const [importId] = useState(() => newId("imp"));
-  const [phase, setPhase] = useState<Phase>({ kind: "ready" });
-  const progress = useRef<Progress>({ nextRow: 0, batchIndex: 0, imported: 0, skipped: 0, emptied: 0, rejected: 0 });
-  const report = useRef<ReportLine[]>([]);
-  const fieldsCreated = useRef(false);
+export function ImportStep({ tableId, csv, validation, strategy, newFields, locale, timeZone, viewHref, onBack, resume, onCheckpoint }: ImportStepProps) {
+  const [importId] = useState(() => resume?.importId ?? newId("imp"));
+  // A resumed import shows where it stopped and a "Continue" button.
+  const [phase, setPhase] = useState<Phase>(resume ? { kind: "cancelled" } : { kind: "ready" });
+  const progress = useRef<Progress>(resume ? { ...resume.progress } : { nextRow: 0, batchIndex: 0, imported: 0, skipped: 0, emptied: 0, rejected: 0, createdRecords: 0 });
+  const report = useRef<ReportLine[]>(resume ? [...resume.report] : []);
+  const fieldsCreated = useRef(resume?.fieldsCreated ?? false);
+  const checkpoint = () => onCheckpoint({ importId, progress: { ...progress.current }, report: report.current, fieldsCreated: fieldsCreated.current });
   const cancelRequested = useRef(false);
   const [, setTick] = useState(0);
   const [reportUrl, setReportUrl] = useState<string | null>(null);
@@ -60,13 +68,13 @@ export function ImportStep({ tableId, csv, validation, strategy, newFields, loca
   }, [reportUrl]);
 
   /** The values to create for one CSV row, or null if it's skipped. Problems go into the report. */
-  function rowValues(rowIndex: number, coercers: ((text: string) => ReturnType<ReturnType<typeof createCoercer>>)[]): Record<string, CellValue> | null {
+  function rowValues(rowIndex: number, coercers: ReturnType<typeof coercerFor>[]): Record<string, CellValue> | null {
     const overrides = validation.overrides.get(rowIndex);
     const input = rowInput(validation.targets, csv.rows[rowIndex], (column) => overrides?.get(column));
     const parsed = validation.schema.safeParse(input);
     const values: Record<string, CellValue> = {};
     if (parsed.success) {
-      for (const [fieldId, value] of Object.entries(parsed.data)) if (value !== null) values[fieldId] = value;
+      for (const [fieldId, value] of Object.entries(parsed.data)) if (value !== null) values[fieldId] = withCreatedRecords(fieldId, value);
       return values;
     }
     const lines = (outcome: ReportLine["outcome"]) =>
@@ -83,9 +91,35 @@ export function ImportStep({ tableId, csv, validation, strategy, newFields, loca
     progress.current.emptied++;
     validation.targets.forEach((target, i) => {
       const result = coercers[i](input[target.field.id]);
-      if (result.ok && result.value !== null) values[target.field.id] = result.value;
+      if (result.ok && result.value !== null) values[target.field.id] = withCreatedRecords(target.field.id, result.value);
     });
     return values;
+  }
+
+  /** Link values name records to create as `new:<label>`; by now they exist, so the placeholder becomes their id. */
+  function withCreatedRecords(fieldId: string, value: CellValue): CellValue {
+    const link = validation.links.get(fieldId);
+    if (!link || !Array.isArray(value)) return value;
+    return value.map((id) => (id.startsWith(NEW_RECORD_PREFIX) ? link.created.get(id.slice(NEW_RECORD_PREFIX.length).toLowerCase())! : id));
+  }
+
+  /**
+   * Creates the linked records that link columns name but that don't exist (when the user
+   * asked for it), in the linked tables, before any row. Their ids are chosen here and kept,
+   * so a retry sends the same ids and the server's "already exists" just means done.
+   */
+  async function createMissingRecords() {
+    for (const link of validation.links.values()) {
+      if (!link.createMissing) continue;
+      for (const label of link.missing) if (!link.created.has(label.toLowerCase())) link.created.set(label.toLowerCase(), newId("row"));
+      const ops = link.missing.map((label) => ({ op: "create" as const, rowId: link.created.get(label.toLowerCase())!, values: { [link.primaryFieldId]: label } }));
+      for (let start = 0; start < ops.length; start += 1000) {
+        const results = await sendRowBatch(link.tableId, ops.slice(start, start + 1000));
+        const failed = results.find((result) => !result.ok && result.error.code !== "CONFLICT");
+        if (failed && !failed.ok) throw new Error(`Couldn't create a record in ${link.tableName}: ${failed.error.message}`);
+      }
+    }
+    progress.current.createdRecords = [...validation.links.values()].reduce((sum, link) => sum + (link.createMissing ? link.missing.length : 0), 0);
   }
 
   async function sendBatch(rows: Record<string, CellValue>[], rowNumbers: number[]) {
@@ -122,10 +156,13 @@ export function ImportStep({ tableId, csv, validation, strategy, newFields, loca
             if (!(error instanceof ApiRequestError && error.status === 409)) throw error;
           }
         }
+        await createMissingRecords();
         fieldsCreated.current = true;
+        checkpoint(); // the ids of created records are saved before any row refers to them
       }
 
-      const coercers = validation.targets.map((target) => createCoercer(target.field, { locale, timeZone }));
+      const matchers = linkMatchers(validation.links);
+      const coercers = validation.targets.map((target) => coercerFor(target, { locale, timeZone }, matchers));
       while (progress.current.nextRow < csv.rows.length) {
         if (cancelRequested.current) return setPhase({ kind: "cancelled" });
         const start = progress.current.nextRow;
@@ -151,9 +188,11 @@ export function ImportStep({ tableId, csv, validation, strategy, newFields, loca
           throw error;
         }
         progress.current.nextRow = row;
+        checkpoint();
         setTick((tick) => tick + 1);
       }
       setPhase({ kind: "done" });
+      onCheckpoint(null);
       const csvReport = Papa.unparse(report.current, { columns: ["row", "outcome", "column", "value", "problem"] });
       setReportUrl(URL.createObjectURL(new Blob([csvReport], { type: "text/csv;charset=utf-8" })));
     } catch (error) {
@@ -204,7 +243,7 @@ export function ImportStep({ tableId, csv, validation, strategy, newFields, loca
       {(phase.kind === "cancelled" || phase.kind === "failed") && (
         <div role="alert" className="flex items-center gap-3">
           <span className={phase.kind === "failed" ? "text-red-600" : ""}>
-            {phase.kind === "failed" ? `Stopped: ${phase.message}` : "Cancelled."} Rows imported so far stay in the table.
+            {phase.kind === "failed" ? `Stopped: ${phase.message}` : resume && progress.current.nextRow === resume.progress.nextRow ? "This import was interrupted." : "Cancelled."} Rows imported so far stay in the table.
           </span>
           <button type="button" className={primaryButtonClass} onClick={() => void run()}>
             Continue
@@ -222,6 +261,12 @@ export function ImportStep({ tableId, csv, validation, strategy, newFields, loca
           <dd>{emptied.toLocaleString()}</dd>
           <dt>Rejected by the server</dt>
           <dd>{rejected.toLocaleString()}</dd>
+          {progress.current.createdRecords > 0 && (
+            <>
+              <dt>Linked records created</dt>
+              <dd>{progress.current.createdRecords.toLocaleString()}</dd>
+            </>
+          )}
         </dl>
       )}
 

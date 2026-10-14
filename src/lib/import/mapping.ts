@@ -40,9 +40,41 @@ export const columnMappingSchema = z.discriminatedUnion("action", [
 export type ColumnMapping = z.infer<typeof columnMappingSchema>;
 export type MappingForm = { columns: ColumnMapping[] };
 
-/** Fields a CSV column can be imported into. Links need matching by primary value (not in Core). */
+/** Fields a CSV column can be imported into: everything but computed fields. */
 export function isImportable(field: Field): boolean {
-  return !isComputedField(field) && field.type !== "link";
+  return !isComputedField(field);
+}
+
+/**
+ * How a link column's text finds records: by the linked table's primary value. Labels
+ * with no record are an error, or, with `createMissing`, a placeholder (`new:<label>`)
+ * that the import replaces with a record it creates first.
+ */
+export type LinkMatcher = { idOf: (label: string) => string | undefined; createMissing: boolean; tableName: string };
+export const NEW_RECORD_PREFIX = "new:";
+
+/** The labels in a link cell: a multiple link splits on commas, a single link takes the whole text. */
+export function linkLabels(text: string, multiple: boolean): string[] {
+  const labels = (multiple ? text.split(/[,;\n]/) : [text]).map((label) => label.trim()).filter(Boolean);
+  const seen = new Set<string>();
+  return labels.filter((label) => !seen.has(label.toLowerCase()) && seen.add(label.toLowerCase()));
+}
+
+function linkCoercer(field: Extract<Field, { type: "link" }>, matcher: LinkMatcher) {
+  return (text: string): { ok: true; value: CellValue } | { ok: false; error: string } => {
+    const labels = linkLabels(text, field.multiple);
+    if (labels.length === 0) return { ok: true, value: null };
+    const ids: string[] = [];
+    const missing: string[] = [];
+    for (const label of labels) {
+      const id = matcher.idOf(label);
+      if (id) ids.push(id);
+      else if (matcher.createMissing) ids.push(`${NEW_RECORD_PREFIX}${label}`);
+      else missing.push(label);
+    }
+    if (missing.length > 0) return { ok: false, error: `No record ${missing.map((label) => `“${label}”`).join(", ")} in ${matcher.tableName}` };
+    return { ok: true, value: [...new Set(ids)] };
+  };
 }
 
 /**
@@ -188,10 +220,16 @@ export type ImportTarget = { column: number; header: string; field: Field };
  * (the same one paste and the cell editors use), so a value that can't be converted is a
  * zod issue on that field, with the coercer's message.
  */
-export function buildRowSchema(targets: ImportTarget[], options: CoerceOptions) {
+/** The text → value converter of one import column: the field's coercer, or for a link column, matching by name. */
+export function coercerFor(target: ImportTarget, options: CoerceOptions, links: ReadonlyMap<string, LinkMatcher> = new Map()) {
+  const matcher = links.get(target.field.id);
+  return target.field.type === "link" && matcher ? linkCoercer(target.field, matcher) : createCoercer(target.field, options);
+}
+
+export function buildRowSchema(targets: ImportTarget[], options: CoerceOptions, links: ReadonlyMap<string, LinkMatcher> = new Map()) {
   const shape: Record<string, z.ZodType<CellValue, string>> = {};
   for (const target of targets) {
-    const coerce = createCoercer(target.field, options);
+    const coerce = coercerFor(target, options, links);
     shape[target.field.id] = z.string().transform((text, ctx) => {
       const result = coerce(text);
       if (result.ok) return result.value;

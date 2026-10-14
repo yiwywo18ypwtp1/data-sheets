@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { buildRowSchema, rowInput, type ImportTarget } from "@/lib/import/mapping";
+import { buildRowSchema, rowInput, type ImportTarget, type LinkMatcher } from "@/lib/import/mapping";
 import { buttonClass, inputClass, primaryButtonClass } from "./styles";
 import type { ParsedCsv } from "./UploadStep";
 
@@ -17,7 +17,31 @@ export type Validation = {
   schema: ReturnType<typeof buildRowSchema>;
   issues: Map<number, Map<number, string>>;
   overrides: Map<number, Map<number, string>>;
+  /** Link columns, by field id: what their labels matched in the linked table. */
+  links: Map<string, LinkColumn>;
 };
+
+/**
+ * A link column's records: labels found in the linked table (lower-cased label → id) and
+ * the ones that weren't, which the import can create (`createMissing`). `created` holds
+ * the ids given to created records, so a retried or resumed import reuses them.
+ */
+export type LinkColumn = {
+  tableId: string;
+  tableName: string;
+  primaryFieldId: string;
+  /** Records can only be created from a label if the primary field is text. */
+  canCreate: boolean;
+  matches: Map<string, string>;
+  missing: string[];
+  createMissing: boolean;
+  created: Map<string, string>;
+};
+
+/** The link columns' matching, for the row schema and the import's converters. */
+export function linkMatchers(links: Map<string, LinkColumn>): Map<string, LinkMatcher> {
+  return new Map([...links.entries()].map(([fieldId, link]) => [fieldId, { idOf: (label) => link.matches.get(label.trim().toLowerCase()), createMissing: link.createMissing, tableName: link.tableName }]));
+}
 
 const ROWS_PER_CHUNK = 2000;
 const PAGE_SIZE = 50;
@@ -40,6 +64,8 @@ export function validateRow(validation: Validation, csv: ParsedCsv, rowIndex: nu
 type ValidateStepProps = {
   csv: ParsedCsv;
   validation: Validation;
+  /** Turns creating the missing records of a link column on or off (the wizard rebuilds the check). */
+  onCreateMissing: (fieldId: string, create: boolean) => void;
   strategy: ErrorStrategy;
   onStrategy: (strategy: ErrorStrategy) => void;
   onBack: () => void;
@@ -52,7 +78,7 @@ type ValidateStepProps = {
  * editable in place (a fix is re-checked at once); whatever is left is skipped or
  * imported as empty, as the user chooses.
  */
-export function ValidateStep({ csv, validation, strategy, onStrategy, onBack, onNext }: ValidateStepProps) {
+export function ValidateStep({ csv, validation, onCreateMissing, strategy, onStrategy, onBack, onNext }: ValidateStepProps) {
   const [checked, setChecked] = useState(0);
   const [listed, setListed] = useState<number[] | null>(null);
   const [page, setPage] = useState(0);
@@ -118,6 +144,18 @@ export function ValidateStep({ csv, validation, strategy, onStrategy, onBack, on
           </>
         )}
       </p>
+
+      {[...validation.links.entries()].map(([fieldId, link]) =>
+        link.missing.length === 0 ? null : (
+          <label key={fieldId} className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={link.createMissing} disabled={!link.canCreate} onChange={(event) => onCreateMissing(fieldId, event.target.checked)} />
+            Create the {link.missing.length.toLocaleString()} {validation.targets.find((target) => target.field.id === fieldId)?.header} values that have no record in {link.tableName}
+            <span className="text-zinc-500">
+              (e.g. {link.missing.slice(0, 3).join(", ")}){!link.canCreate && " — not possible: its primary field isn't text"}
+            </span>
+          </label>
+        ),
+      )}
 
       {listed.length > 0 && (
         <>

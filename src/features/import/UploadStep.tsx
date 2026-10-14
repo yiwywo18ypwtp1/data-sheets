@@ -1,28 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { ENCODINGS, type TextEncoding } from "@/lib/import/encoding";
-import type { ParseMessage, ParseRequest } from "./csv.worker";
+import type { ParseRequest } from "./csv.worker";
+import { parseCsvFile, type ParsedCsv } from "./parseCsv";
 import { buttonClass, primaryButtonClass, selectClass } from "./styles";
 
-export const MAX_FILE_BYTES = 20 * 1024 * 1024;
-const PREVIEW_ROWS = 50;
+export type { ParsedCsv } from "./parseCsv";
 
-/** A parsed CSV: the first row is the header. Rows are kept in a plain array, never in React state. */
-export type ParsedCsv = {
-  fileName: string;
-  encoding: TextEncoding;
-  delimiter: string;
-  headers: string[];
-  rows: string[][];
-};
+const PREVIEW_ROWS = 50;
 
 const DELIMITERS: Record<string, string> = { ",": "Comma", ";": "Semicolon", "\t": "Tab", "|": "Pipe" };
 
 type Parsing = { progress: number; rows: number };
-
-/** Header names, never empty, padded to the widest row. */
-function headersOf(first: string[], width: number): string[] {
-  return Array.from({ length: width }, (_, i) => first[i]?.trim() || `Column ${i + 1}`);
-}
 
 /**
  * Step 1: pick a file, parse it in a Web Worker with progress, show what was detected
@@ -32,42 +20,29 @@ export function UploadStep({ parsed, onParsed, onNext }: { parsed: ParsedCsv | n
   const [file, setFile] = useState<File | null>(null);
   const [parsing, setParsing] = useState<Parsing | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const workerRef = useRef<Worker | null>(null);
+  const cancelRef = useRef<(() => void) | null>(null);
 
-  useEffect(() => () => workerRef.current?.terminate(), []);
+  useEffect(() => () => cancelRef.current?.(), []);
 
   function parse(source: File, options: Omit<ParseRequest, "file"> = {}) {
-    workerRef.current?.terminate();
+    cancelRef.current?.();
     setError(null);
     onParsed(null);
-    if (source.size > MAX_FILE_BYTES) return setError(`The file is ${(source.size / 1024 / 1024).toFixed(1)} MB; the limit is 20 MB.`);
-
-    const worker = new Worker(new URL("./csv.worker.ts", import.meta.url), { type: "module" });
-    workerRef.current = worker;
-    const all: string[][] = [];
     setParsing({ progress: 0, rows: 0 });
-    worker.onmessage = (event: MessageEvent<ParseMessage>) => {
-      const message = event.data;
-      if (message.type === "rows") {
-        for (const row of message.rows) all.push(row);
-        setParsing({ progress: message.progress, rows: all.length });
-      } else if (message.type === "error") {
-        worker.terminate();
+    cancelRef.current = parseCsvFile(
+      source,
+      options,
+      (progress, rows) => setParsing({ progress, rows }),
+      (result) => {
         setParsing(null);
-        setError(`Couldn't read the file: ${message.message}`);
-      } else {
-        worker.terminate();
-        setParsing(null);
-        if (all.length < 2) return setError("The file has no data rows: the first row must be the column headers.");
-        const width = Math.max(...all.slice(0, 1000).map((row) => row.length));
-        onParsed({ fileName: source.name, encoding: message.encoding, delimiter: message.delimiter, headers: headersOf(all[0], width), rows: all.slice(1) });
-      }
-    };
-    worker.postMessage({ file: source, ...options } satisfies ParseRequest);
+        if (result.ok) onParsed(result.csv);
+        else setError(result.error);
+      },
+    );
   }
 
   function cancel() {
-    workerRef.current?.terminate();
+    cancelRef.current?.();
     setParsing(null);
   }
 

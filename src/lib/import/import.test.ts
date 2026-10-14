@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Field } from "@/lib/domain/field";
 import { detectEncoding } from "./encoding";
-import { autoMap, buildRowSchema, draftField, importTargets, inferType, mappingSchemaFor, rowInput, type ColumnMapping } from "./mapping";
+import { autoMap, buildRowSchema, draftField, importTargets, inferType, linkLabels, mappingSchemaFor, rowInput, type ColumnMapping } from "./mapping";
 
 const uk = { locale: "uk-UA", timeZone: "Europe/Kyiv" };
 const en = { locale: "en-US", timeZone: "America/Los_Angeles" };
@@ -60,7 +60,7 @@ describe("autoMap", () => {
     expect(mapping[1]).toEqual({ action: "existing", fieldId: "fld_qty" });
     // Computed and link fields aren't import targets: a new field is proposed, named so it doesn't clash.
     expect(mapping[2]).toMatchObject({ action: "new", name: "Total (import)", type: "number" });
-    expect(mapping[3]).toMatchObject({ action: "new", name: "Customer (import)" });
+    expect(mapping[3]).toEqual({ action: "existing", fieldId: "fld_customer" }); // links match records by name
     expect(mapping[4]).toMatchObject({ action: "new", name: "Name (import)" });
     expect(mapping[5]).toMatchObject({ action: "new", name: "Column 6" });
   });
@@ -137,5 +137,26 @@ describe("importTargets", () => {
       [2, "fld_new"],
     ]);
     expect(targets[1].field).toMatchObject({ type: "number", precision: 1 });
+  });
+});
+
+describe("link columns", () => {
+  const link = { column: 0, header: "Customer", field: fields[3] };
+  const known: Record<string, string> = { ada: "row_ada", bob: "row_bob" };
+  const matcher = (createMissing: boolean) => new Map([["fld_customer", { idOf: (label: string) => known[label.toLowerCase()], createMissing, tableName: "Customers" }]]);
+
+  it("finds records by primary value and reports the missing ones", () => {
+    const schema = buildRowSchema([link], uk, matcher(false));
+    expect(schema.parse({ fld_customer: " ADA " })).toEqual({ fld_customer: ["row_ada"] });
+    expect(schema.safeParse({ fld_customer: "Zoe" }).error?.issues[0].message).toBe("No record “Zoe” in Customers");
+  });
+
+  it("marks missing records for creation when asked", () => {
+    expect(buildRowSchema([link], uk, matcher(true)).parse({ fld_customer: "Zoe" })).toEqual({ fld_customer: ["new:Zoe"] });
+  });
+
+  it("splits several records only for a multiple link", () => {
+    expect(linkLabels("Ada, Bob; ada", true)).toEqual(["Ada", "Bob"]);
+    expect(linkLabels("Doe, John", false)).toEqual(["Doe, John"]);
   });
 });

@@ -203,3 +203,18 @@ export function searchRecords(tableId: string, primaryFieldId: string, q: string
     .all(`$."${primaryFieldId}"`, tableId, `$."${primaryFieldId}"`, q.trim().toLowerCase(), limit) as { id: string; label: unknown }[];
   return records.map((record) => ({ id: record.id, label: record.label === null ? "Unnamed record" : String(record.label) }));
 }
+
+/** Record ids by primary value (trimmed, case-insensitive; the earliest record wins), for importing link columns. */
+export function matchRecords(tableId: string, primaryFieldId: string, labels: string[]): Record<string, string> {
+  const wanted = new Map(labels.map((label) => [label.trim().toLowerCase(), label]));
+  const records = getDb()
+    .prepare("SELECT id, json_extract(cells, ?) AS label FROM rows WHERE table_id = ? ORDER BY seq")
+    .all(`$."${primaryFieldId}"`, tableId) as { id: string; label: unknown }[];
+  const matches: Record<string, string> = {};
+  for (const record of records) {
+    if (record.label === null || record.label === undefined) continue;
+    const label = wanted.get(String(record.label).trim().toLowerCase());
+    if (label !== undefined && !(label in matches)) matches[label] = record.id;
+  }
+  return matches;
+}

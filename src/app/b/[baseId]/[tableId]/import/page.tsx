@@ -31,5 +31,9 @@ export default async function ImportPage({ params }: PageProps<"/b/[baseId]/[tab
       </div>
     );
   }
-  return <ImportWizard tableId={table.id} tableName={table.name} fields={table.fields} viewHref={viewHref} />;
+  const tables = base.tables.flatMap((summary) => {
+    const linked = getTable(summary.id);
+    return linked ? [{ id: linked.id, name: linked.name, primaryFieldId: linked.primaryFieldId, fields: linked.fields }] : [];
+  });
+  return <ImportWizard tableId={table.id} tableName={table.name} fields={table.fields} tables={tables} viewHref={viewHref} />;
 }

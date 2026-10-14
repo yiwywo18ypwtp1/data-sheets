@@ -84,6 +84,8 @@ npm run lint
 - Columns are matched to fields by name. Two columns can't go into one field. New fields get a suggested type.
 - The check step lists invalid values. Fix one in place, then choose "skip rows" or "import as empty". The result shows imported / skipped / imported with empty values / rejected, plus a CSV report.
 - A 20 MB file (about 180 000 rows) parses in a worker with progress. Cancel during the import and continue: no row is imported twice (each batch has an idempotency key).
+- Close the tab mid-import and open the import page again: "Resume" continues where it stopped (the file and choices are kept in IndexedDB), and the total matches the file exactly.
+- Link columns (e.g. Customer in Orders) match records by their name, case-insensitively. Names with no record are errors, or, with "Create the N … values that have no record", new records created before the rows.
 
 ### Edge cases from section 8
 
@@ -100,7 +102,7 @@ npm run lint
 | 3 × 1 000 pasted cells with invalid values; 1 column into 5 | invalid ones highlighted; repeated across the 5 |
 | `text` → `number` where 30% aren't numbers; then back | the preview counts converted / emptied values with examples; after "Convert field" the non-numbers are empty; converting back gives the numbers as text |
 | `2026-03-29 02:30` / `2026-10-25 02:30` in Europe/Berlin | "doesn't exist (clocks skip it)" / the first of the two instants |
-| CSV in Windows-1251 with `;` and BOM; 20 MB | detected; parsed in a worker. Closing the tab mid-import keeps the rows already imported; resuming isn't in Core |
+| CSV in Windows-1251 with `;` and BOM; 20 MB; close the tab mid-import and open it again | detected; parsed in a worker; "Resume" finishes it without duplicates |
 | filter by a formula that uses a lookup, then edit the linked record | the server recomputes lookups and formulas of linking rows; the filter applies on the next load of the view |
 | scroll to the end, Cmd+Z | undoes the early edit and scrolls to it |
 | two tabs: one deletes a row the other is editing / a field the other filters by | the editor closes / the draft resets, each with an explanation |
@@ -111,9 +113,8 @@ npm run lint
 
 Planned in this order, with the reason each one waits:
 
-1. **Import resume after reload and link columns (2.4 Advanced).** Resume needs the import id and progress in `sessionStorage`, plus the stored batch keys the server already keeps.
-2. **Public form `/f/[viewId]` (2.5).**
-3. **RTL and Playwright tests.** The pure logic is unit-tested (formulas, coercion, filters, mapping, the grid store, undo, selection, the API). The UI flows were checked with ad-hoc Playwright scripts, not committed tests.
+1. **Public form `/f/[viewId]` (2.5).**
+2. **RTL and Playwright tests.** The pure logic is unit-tested (formulas, coercion, filters, mapping, the grid store, undo, selection, the API). The UI flows were checked with ad-hoc Playwright scripts, not committed tests.
 
 Known limitations:
 - Footer sums update on the next window load, not on every edit.
