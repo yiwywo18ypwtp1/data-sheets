@@ -25,7 +25,7 @@ export const MAX_COLUMN_WIDTH = 800;
 export const viewSchema = z.object({
   id: idSchema,
   name: z.string().trim().min(1, "Name is required").max(100),
-  kind: z.enum(["grid", "form"]),
+  kind: z.enum(["grid", "form", "kanban"]),
   filter: filterGroupSchema,
   sorts: sortsSchema,
   groupBy: z
@@ -39,6 +39,11 @@ export const viewSchema = z.object({
   rowHeight: rowHeightSchema,
   /** Only for `kind: "form"`: the public form's questions (see form.ts). */
   form: formConfigSchema.optional(),
+  /**
+   * Only for `kind: "kanban"`: the single select whose options are the columns. Absent
+   * when that field was deleted or changed type: the board asks for another one.
+   */
+  kanban: z.object({ fieldId: idSchema }).optional(),
 });
 export type View = z.infer<typeof viewSchema>;
 
@@ -60,6 +65,18 @@ export function visibleFields(fields: Field[], primaryFieldId: string, view: Pic
   const ordered = [...view.fieldOrder.filter((id) => byId.has(id)), ...fields.map((field) => field.id).filter((id) => !view.fieldOrder.includes(id))];
   const hidden = new Set(view.hiddenFieldIds);
   return [primaryFieldId, ...ordered.filter((id) => id !== primaryFieldId && !hidden.has(id))].flatMap((id) => byId.get(id) ?? []);
+}
+
+/** Kanban columns are the options of a single select field: the fields a board can be stacked by. */
+export function kanbanFields(fields: Field[]): Field[] {
+  return fields.filter((field) => field.type === "singleSelect");
+}
+
+/** Why a board can't be stacked by this field, or null if it can. The same check on the client and on save. */
+export function kanbanFieldIssue(fieldId: string, fields: Field[]): string | null {
+  const field = fields.find((candidate) => candidate.id === fieldId);
+  if (!field) return "Field no longer exists";
+  return field.type === "singleSelect" ? null : "A board is stacked by a single select field";
 }
 
 /** Array-valued fields have no natural order, so they can't be sorted. */

@@ -146,6 +146,12 @@ export function queryRowIds(table: Pick<TableMeta, "id" | "fields">, query: Omit
   return resultSetFor(table, query).ids;
 }
 
+/** The ordered ids with the groups' positions: a kanban board slices its columns out of it. */
+export function queryGroupedIds(table: Pick<TableMeta, "id" | "fields">, query: Omit<RowQuery, "offset" | "limit" | "withGroups">): { ids: readonly string[]; groups: readonly RowGroup[] } {
+  const { ids, groups } = resultSetFor(table, query);
+  return { ids, groups };
+}
+
 /**
  * One window of rows for the virtualized grid, plus the total and aggregates for the
  * whole filtered set. Filtering and sorting happen in SQLite, never on the client.

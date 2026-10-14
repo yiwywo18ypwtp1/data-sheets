@@ -50,3 +50,9 @@ export type CellHistoryResponse = {
 
 /** `GET /api/tables/:id/rows/:rowId` */
 export type RowResponse = { row: Row; linkedLabels: Record<string, string> };
+
+/** One column of a kanban board: the option id (null: no value), how many cards match, and a page of them. */
+export type KanbanColumnData = { key: string | null; count: number; rows: Row[] };
+
+/** `GET /api/tables/:id/kanban` */
+export type KanbanResponse = { columns: KanbanColumnData[]; total: number; linkedLabels: Record<string, string> };

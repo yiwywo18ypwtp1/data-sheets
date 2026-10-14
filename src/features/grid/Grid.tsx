@@ -12,7 +12,7 @@ import type { View, ViewQuery } from "@/lib/domain/view";
 import { createCellFormatter } from "@/lib/format";
 import { DeleteFieldDialog } from "@/features/fields/DeleteFieldDialog";
 import { FieldDialog, type BaseTable } from "@/features/fields/FieldDialog";
-import { RecordPanel, type RecordTab } from "@/features/records/RecordPanel";
+import { RecordPanel, recordFields, type RecordTab } from "@/features/records/RecordPanel";
 import { useOpenRecord } from "@/features/records/useOpenRecord";
 import { ViewPanel } from "@/features/view-panel/ViewPanel";
 import { download, exportCsvUrl, fetchRowWindow, sendRowBatch } from "./api";
@@ -427,7 +427,7 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
           tableId={tableId}
           record={record}
           row={recordRow}
-          fields={columns.map((column) => column.field)}
+          fields={recordFields(fields, columns.map((column) => column.field))}
           primaryFieldId={primaryFieldId}
           currentUserId={currentUser.id}
           locale={locale}

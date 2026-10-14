@@ -31,6 +31,8 @@ type ViewPanelProps = {
   linkFilter: FilterGroup | null;
   linkFilterError: string | null;
   labelOf: FilterContext["labelOf"];
+  /** Whether grouping is offered (a kanban board is grouped by its own field). */
+  grouping?: boolean;
 };
 
 const pick = (view: View): ViewQuery => ({ filter: view.filter, sorts: view.sorts, groupBy: view.groupBy ?? [] });
@@ -61,7 +63,7 @@ function activeCount(query: ViewQuery): number {
  *
  * The panel stays mounted while closed (just hidden), so a draft survives closing it.
  */
-export function ViewPanel({ open, fields, saved, save, onApply, onStatusChange, linkFilter, linkFilterError, labelOf }: ViewPanelProps) {
+export function ViewPanel({ open, fields, saved, save, onApply, onStatusChange, linkFilter, linkFilterError, labelOf, grouping = true }: ViewPanelProps) {
   const schema = useMemo(() => viewQuerySchemaFor(fields), [fields]);
   const form = useForm<ViewQuery>({ resolver: zodResolver(schema), defaultValues: pick(saved), mode: "onChange" });
   const [copied, setCopied] = useState(false);
@@ -158,7 +160,7 @@ export function ViewPanel({ open, fields, saved, save, onApply, onStatusChange, 
         <div hidden={!open} className="flex max-h-[45vh] flex-wrap gap-x-10 gap-y-4 overflow-auto">
           <FilterFields context={{ fields, labelOf }} />
           <SortFields fields={fields} />
-          <GroupFields fields={fields} />
+          {grouping && <GroupFields fields={fields} />}
         </div>
         {actions}
       </form>

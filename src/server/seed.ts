@@ -166,6 +166,13 @@ const TABLES = [
         sorts: [{ fieldId: "fld_o_total", direction: "desc" }],
         hiddenFieldIds: ["fld_o_notes", "fld_o_coupon", "fld_o_tracking"],
       }),
+      // Beyond the task's three views per table: a board to show the kanban view.
+      gridView("viw_orders_board", "Status board", orderFields, {
+        kind: "kanban",
+        kanban: { fieldId: "fld_o_status" },
+        sorts: [{ fieldId: "fld_o_ordered_at", direction: "desc" }],
+        hiddenFieldIds: orderFields.map((field) => field.id).filter((id) => !["fld_o_customer", "fld_o_total", "fld_o_due"].includes(id)),
+      }),
     ],
   },
   {

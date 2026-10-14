@@ -5,8 +5,10 @@ import { filterFieldIssues } from "@/lib/domain/filter";
 import { decodeFilterParam } from "@/lib/domain/query";
 import { idSchema } from "@/lib/domain/ids";
 import { hasRole } from "@/lib/domain/user";
+import { kanbanFieldIssue } from "@/lib/domain/view";
 import { routes } from "@/lib/routes";
 import { FormBuilder } from "@/features/forms/FormBuilder";
+import { Kanban } from "@/features/kanban/Kanban";
 import { Grid } from "@/features/grid/Grid";
 import { NewViewButton } from "@/features/table-shell/NewViewButton";
 import { BLOCK_SIZE } from "@/features/grid/GridStore";
@@ -14,6 +16,7 @@ import { TableTabs } from "@/features/table-shell/TableTabs";
 import { ViewTabs } from "@/features/table-shell/ViewTabs";
 import { getCurrentUser } from "@/server/auth";
 import { now } from "@/server/clock";
+import { KANBAN_PAGE, kanbanColumns } from "@/server/kanban";
 import { linkedRecordLabels, queryRows } from "@/server/rows";
 import { getBase, getBaseSchema, getTable, getView } from "@/server/tables";
 
@@ -49,17 +52,35 @@ export default async function ViewPage({ params, searchParams }: PageProps<"/b/[
   const view = table.views.find((candidate) => candidate.id === viewId);
   if (!view) notFound();
 
+  const tabs = (
+    <>
+      <div className="flex items-end gap-4 bg-zinc-100 px-4 pt-2 dark:bg-zinc-950">
+        <span className="pb-1.5 text-sm font-semibold text-zinc-500">{base.name}</span>
+        <TableTabs baseId={baseId} tables={base.tables} activeTableId={tableId} />
+      </div>
+      <div className="flex items-center gap-4 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+        <ViewTabs baseId={baseId} tableId={tableId} views={table.views} activeViewId={viewId} />
+        {hasRole(user.role, "editor") && <NewViewButton baseId={baseId} tableId={tableId} viewCount={table.views.length} />}
+        {view.kind !== "form" && !hasRole(user.role, "editor") && (
+          <span className="ml-auto rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+            Read-only: you are a viewer
+          </span>
+        )}
+      </div>
+    </>
+  );
+
+  // `?filter=<base64>`: an unsaved filter shared by link. One that doesn't fit the table is ignored, with a notice.
+  const linkFilter = typeof filterParam === "string" ? decodeFilterParam(filterParam) : null;
+  const linkFilterFits = linkFilter !== null && filterFieldIssues(linkFilter, table.fields).length === 0;
+  const linkFilterError = typeof filterParam === "string" && !linkFilterFits ? "The filter in the link doesn't fit this table and was ignored." : null;
+  // A link whose filter is the saved one is just a link to the view.
+  const linkFilterValid = linkFilterFits && JSON.stringify(linkFilter) !== JSON.stringify(view.filter);
+
   if (view.kind === "form") {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex items-end gap-4 bg-zinc-100 px-4 pt-2 dark:bg-zinc-950">
-          <span className="pb-1.5 text-sm font-semibold text-zinc-500">{base.name}</span>
-          <TableTabs baseId={baseId} tables={base.tables} activeTableId={tableId} />
-        </div>
-        <div className="flex items-center gap-4 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
-          <ViewTabs baseId={baseId} tableId={tableId} views={table.views} activeViewId={viewId} />
-          {hasRole(user.role, "editor") && <NewViewButton baseId={baseId} tableId={tableId} viewCount={table.views.length} />}
-        </div>
+        {tabs}
         <FormBuilder
           key={`${view.id}:${schemaKey(table.fields)}`}
           view={view}
@@ -73,12 +94,32 @@ export default async function ViewPage({ params, searchParams }: PageProps<"/b/[
     );
   }
 
-  // `?filter=<base64>`: an unsaved filter shared by link. One that doesn't fit the table is ignored, with a notice.
-  const linkFilter = typeof filterParam === "string" ? decodeFilterParam(filterParam) : null;
-  const linkFilterFits = linkFilter !== null && filterFieldIssues(linkFilter, table.fields).length === 0;
-  const linkFilterError = typeof filterParam === "string" && !linkFilterFits ? "The filter in the link doesn't fit this table and was ignored." : null;
-  // A link whose filter is the saved one is just a link to the view.
-  const linkFilterValid = linkFilterFits && JSON.stringify(linkFilter) !== JSON.stringify(view.filter);
+  if (view.kind === "kanban") {
+    const stackBy = view.kanban && kanbanFieldIssue(view.kanban.fieldId, table.fields) === null ? view.kanban.fieldId : null;
+    const initial = stackBy
+      ? kanbanColumns(table, { filter: linkFilterValid ? linkFilter : view.filter, sorts: view.sorts, timeZone: "UTC" }, stackBy, { limit: KANBAN_PAGE })
+      : null;
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        {tabs}
+        <Kanban
+          key={`${view.id}:${schemaKey(table.fields)}`}
+          tableId={table.id}
+          tableName={table.name}
+          fields={table.fields}
+          primaryFieldId={table.primaryFieldId}
+          view={view}
+          viewVersion={getView(view.id)?.version ?? 0}
+          initial={initial}
+          linkFilter={linkFilterValid ? linkFilter : null}
+          linkFilterError={linkFilterError}
+          canEdit={hasRole(user.role, "editor")}
+          currentUser={{ id: user.id, name: user.name }}
+          initialRecordId={idSchema.safeParse(recordParam).data ?? null}
+        />
+      </div>
+    );
+  }
 
   // The viewer's time zone isn't known on the server; UTC only matters for "today" filters.
   const initialWindow = queryRows(table, {
@@ -96,19 +137,7 @@ export default async function ViewPage({ params, searchParams }: PageProps<"/b/[
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-end gap-4 bg-zinc-100 px-4 pt-2 dark:bg-zinc-950">
-        <span className="pb-1.5 text-sm font-semibold text-zinc-500">{base.name}</span>
-        <TableTabs baseId={baseId} tables={base.tables} activeTableId={tableId} />
-      </div>
-      <div className="flex items-center gap-4 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
-        <ViewTabs baseId={baseId} tableId={tableId} views={table.views} activeViewId={viewId} />
-        {hasRole(user.role, "editor") && <NewViewButton baseId={baseId} tableId={tableId} viewCount={table.views.length} />}
-        {!hasRole(user.role, "editor") && (
-          <span className="ml-auto rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-            Read-only: you are a viewer
-          </span>
-        )}
-      </div>
+      {tabs}
       {/* Keyed by view and schema: switching views, or a field change, starts a fresh grid store
           (new columns, recomputed values) instead of patching the old one. */}
       <Grid

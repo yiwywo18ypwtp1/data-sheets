@@ -28,7 +28,7 @@ describe("seed", () => {
   it("creates the scaled demo data", () => {
     expect(allRows).toHaveLength(500);
     expect(orders.fields).toHaveLength(30);
-    expect(orders.views).toHaveLength(3);
+    expect(orders.views).toHaveLength(4); // three grids and a kanban board
     expect(getTable(TABLE_IDS.customers)!.fields.filter((field) => field.type === "formula")).toHaveLength(1);
   });
 

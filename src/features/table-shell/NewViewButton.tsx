@@ -8,7 +8,7 @@ import { Popover } from "@/features/grid/editors/Popover";
 import { useOutsidePointerDown } from "@/features/grid/editors/useOutsidePointerDown";
 import { request } from "@/features/grid/api";
 
-/** "+" next to the view tabs: adds a grid view or a form, then opens it. */
+/** "+" next to the view tabs: adds a grid view, a form or a kanban board, then opens it. */
 export function NewViewButton({ baseId, tableId, viewCount }: { baseId: string; tableId: string; viewCount: number }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -23,7 +23,7 @@ export function NewViewButton({ baseId, tableId, viewCount }: { baseId: string; 
       const { view } = await request<{ view: View }>(`/api/tables/${tableId}/views`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ kind, name: kind === "form" ? "Form" : `Grid ${viewCount + 1}` }),
+        body: JSON.stringify({ kind, name: kind === "form" ? "Form" : kind === "kanban" ? "Board" : `Grid ${viewCount + 1}` }),
       });
       router.push(routes.view(baseId, tableId, view.id));
       router.refresh();
@@ -45,6 +45,9 @@ export function NewViewButton({ baseId, tableId, viewCount }: { baseId: string; 
             </button>
             <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={() => void create("form")}>
               Form
+            </button>
+            <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800" onClick={() => void create("kanban")}>
+              Kanban board
             </button>
           </div>
         </Popover>

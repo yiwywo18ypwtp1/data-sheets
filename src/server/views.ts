@@ -3,7 +3,7 @@ import { isComputedField } from "@/lib/domain/field";
 import { EMPTY_FILTER } from "@/lib/domain/filter";
 import { defaultFormConfig, formConfigIssues } from "@/lib/domain/form";
 import { newId } from "@/lib/domain/ids";
-import { viewConfigSchemaFor, viewSchema, type View } from "@/lib/domain/view";
+import { kanbanFields, kanbanFieldIssue, viewConfigSchemaFor, viewSchema, type View } from "@/lib/domain/view";
 import { getDb } from "./db";
 import { ApiError, notFound, zodFieldErrors } from "./errors";
 import { appendEvent, type Origin } from "./events";
@@ -41,6 +41,10 @@ export function saveView(viewId: string, input: unknown, expectedVersion: number
   const fieldIds = new Set(table.fields.map((field) => field.id));
   const unknown = [...view.fieldOrder, ...Object.keys(view.columnWidths)].filter((id) => !fieldIds.has(id));
   if (unknown.length > 0) throw new ApiError("VALIDATION_ERROR", 400, `Unknown fields: ${unknown.join(", ")}`);
+  if (view.kind === "kanban" && view.kanban) {
+    const issue = kanbanFieldIssue(view.kanban.fieldId, table.fields);
+    if (issue) throw new ApiError("VALIDATION_ERROR", 400, issue, { fieldErrors: { "kanban.fieldId": issue } });
+  }
   if (view.kind === "form") {
     if (!view.form) throw new ApiError("VALIDATION_ERROR", 400, "A form view needs its form settings", { fieldErrors: { form: "Required" } });
     const issues = formConfigIssues(view.form, table.fields);
@@ -60,10 +64,17 @@ export function saveView(viewId: string, input: unknown, expectedVersion: number
   return { view, version: current.version + 1 };
 }
 
-/** A new view at the end of the table's tabs: a grid showing every field, or a form with a few questions. */
-export function createView(tableId: string, input: { name: string; kind: "grid" | "form" }): View {
+/**
+ * A new view at the end of the table's tabs: a grid showing every field, a form with a
+ * few questions, or a board stacked by the table's first single select field.
+ */
+export function createView(tableId: string, input: { name: string; kind: View["kind"] }): View {
   const table = getTable(tableId);
   if (!table) throw notFound("Table");
+  const stackBy = kanbanFields(table.fields)[0];
+  if (input.kind === "kanban" && !stackBy) {
+    throw new ApiError("VALIDATION_ERROR", 400, "A board needs a single select field: add one first", { fieldErrors: { kind: "No single select field" } });
+  }
   const view: View = {
     id: newId("viw"),
     name: input.name,
@@ -75,6 +86,7 @@ export function createView(tableId: string, input: { name: string; kind: "grid" 
     columnWidths: {},
     rowHeight: "short",
     ...(input.kind === "form" ? { form: defaultFormConfig(table.name, table.fields.filter((field) => !isComputedField(field))) } : {}),
+    ...(input.kind === "kanban" ? { kanban: { fieldId: stackBy.id } } : {}),
   };
   const db = getDb();
   const { position } = db.prepare("SELECT coalesce(max(position), -1) + 1 AS position FROM views WHERE table_id = ?").get(tableId) as { position: number };

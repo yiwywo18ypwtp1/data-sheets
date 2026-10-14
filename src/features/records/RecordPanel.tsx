@@ -12,6 +12,15 @@ import { Comments } from "./Comments";
 
 export type RecordTab = "comments" | "history";
 
+/**
+ * The fields a record panel lists: the view's visible ones in its order, then the hidden
+ * ones (the panel shows the whole record, and their history too).
+ */
+export function recordFields(allFields: Field[], shown: Field[]): Field[] {
+  const visible = new Set(shown.map((field) => field.id));
+  return [...shown, ...allFields.filter((field) => !visible.has(field.id))];
+}
+
 /** Which record the panel shows, and how it was opened (from a cell: that cell's history). */
 export type OpenRecord = { rowId: string; tab: RecordTab; fieldId: string | null };
 

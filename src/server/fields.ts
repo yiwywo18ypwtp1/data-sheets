@@ -269,6 +269,8 @@ function viewAfterTypeChange(view: View, field: Field): View {
   return {
     ...view,
     sorts: view.sorts.filter((sort) => sort.fieldId !== field.id || isSortable(field)),
+    // A board stacked by a field that's no longer a single select asks for another field.
+    kanban: view.kanban?.fieldId === field.id && field.type !== "singleSelect" ? undefined : view.kanban,
     filter: {
       ...view.filter,
       conditions: view.filter.conditions.filter(keep),
@@ -345,6 +347,7 @@ function viewWithoutField(view: View, fieldId: string): View {
     columnWidths,
     sorts: view.sorts.filter((sort) => keep(sort.fieldId)),
     groupBy: view.groupBy?.filter((group) => keep(group.fieldId)),
+    kanban: view.kanban && keep(view.kanban.fieldId) ? view.kanban : undefined,
     filter: {
       ...view.filter,
       conditions: view.filter.conditions.filter((condition) => keep(condition.fieldId)),
