@@ -10,6 +10,11 @@ import { getBase, getFirstBaseId, getView } from "@/server/tables";
  */
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  // A public form: the view must exist and be a form.
+  if (pathname.startsWith("/f/")) {
+    const form = getView(pathname.split("/")[2] ?? "");
+    return form?.view.kind === "form" ? NextResponse.next() : notFound(request);
+  }
   // `/` opens the first base, like `/b/<baseId>`; with no bases at all the home page says so.
   const firstBaseId = pathname === "/" ? getFirstBaseId() : null;
   if (pathname === "/" && !firstBaseId) return NextResponse.next();
@@ -34,5 +39,5 @@ function notFound(request: NextRequest) {
 
 export const config = {
   // Only the grid page and the redirects above it; deeper paths are left to the router.
-  matcher: ["/", "/b/:baseId", "/b/:baseId/:tableId", "/b/:baseId/:tableId/:viewId"],
+  matcher: ["/", "/b/:baseId", "/b/:baseId/:tableId", "/b/:baseId/:tableId/:viewId", "/f/:viewId"],
 };

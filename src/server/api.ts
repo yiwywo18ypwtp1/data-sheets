@@ -12,7 +12,7 @@ import { ApiError, zodFieldErrors, type ErrorBody } from "./errors";
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** `MOCK_LATENCY_MS` delays every API call; `MOCK_FAILURE_RATE` (0..1) fails that share of them with 503. */
-async function simulateNetwork(): Promise<void> {
+export async function simulateNetwork(): Promise<void> {
   const latency = Number(process.env.MOCK_LATENCY_MS ?? 0);
   if (latency > 0) await sleep(latency);
   const failureRate = Number(process.env.MOCK_FAILURE_RATE ?? 0);

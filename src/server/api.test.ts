@@ -8,6 +8,9 @@ import * as searchRoute from "@/app/api/tables/[id]/records/search/route";
 import * as viewRoute from "@/app/api/views/[id]/route";
 import * as formulaRoute from "@/app/api/formula/check/route";
 import * as importRoute from "@/app/api/tables/[id]/import/route";
+import * as formRoute from "@/app/api/forms/[viewId]/route";
+import * as viewsRoute from "@/app/api/tables/[id]/views/route";
+import { formDefinition } from "./forms";
 import { encodeFilterParam } from "@/lib/domain/query";
 import type { Row } from "@/lib/domain/row";
 import type { TableMeta } from "@/lib/domain/table";
@@ -336,6 +339,49 @@ describe("POST /api/tables/:id/import", () => {
     expect((await post({ rows: [{ fld_p_name: "x" }] })).status).toBe(400);
     userId = "usr_editor";
     expect((await post({ rows: [{ fld_p_name: "x" }] }, "imp_test:1")).status).toBe(403);
+  });
+});
+
+describe("public forms", () => {
+  async function createForm() {
+    const response = await viewsRoute.POST(send("POST", "/api/tables/tbl_customers/views", { name: "Signup", kind: "form" }), params({ id: "tbl_customers" }));
+    expect(response.status).toBe(201);
+    const { view } = (await response.json()) as { view: { id: string } };
+    return view.id;
+  }
+  const submit = (viewId: string, body: Record<string, unknown>, ip = "10.0.0.1") =>
+    formRoute.POST(send("POST", `/api/forms/${viewId}`, body, { "x-forwarded-for": ip }), params({ viewId }));
+  const customers = async () => ((await (await rowsRoute.GET(get("/api/tables/tbl_customers/rows?limit=1"), params({ id: "tbl_customers" }))).json()) as { total: number }).total;
+
+  it("creates one record per submission id, however often it's sent", async () => {
+    const viewId = await createForm();
+    const { version } = formDefinition(viewId)!;
+    const before = await customers();
+    const body = { submissionId: "sub_once", version, answers: { fld_c_name: "Guest", fld_c_discount: "12.5" } };
+    expect((await submit(viewId, body)).status).toBe(201);
+    expect((await submit(viewId, body)).status).toBe(201);
+    expect(await customers()).toBe(before + 1);
+  });
+
+  it("fakes success for bots, checks answers, and refuses an outdated form", async () => {
+    const viewId = await createForm();
+    const { version } = formDefinition(viewId)!;
+    const before = await customers();
+    expect((await submit(viewId, { submissionId: "sub_bot", version, answers: { fld_c_name: "Spam" }, website: "http://spam" }, "10.0.0.2")).status).toBe(201);
+    expect(await customers()).toBe(before);
+    const invalid = await submit(viewId, { submissionId: "sub_bad", version, answers: { fld_c_discount: "lots" } }, "10.0.0.2");
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({ error: { fieldErrors: { fld_c_discount: expect.stringContaining("not a number") } } });
+    expect((await submit(viewId, { submissionId: "sub_old", version: "old", answers: {} }, "10.0.0.2")).status).toBe(409);
+  });
+
+  it("limits submissions per IP and refuses views that aren't forms", async () => {
+    const viewId = await createForm();
+    const { version } = formDefinition(viewId)!;
+    const statuses = [];
+    for (let i = 0; i < 6; i++) statuses.push((await submit(viewId, { submissionId: `sub_rate${i}`, version, answers: {} }, "10.0.0.3")).status);
+    expect(statuses).toEqual([201, 201, 201, 201, 201, 429]);
+    expect((await submit("viw_customers_all", { submissionId: "sub_grid", version, answers: {} }, "10.0.0.4")).status).toBe(404);
   });
 });
 

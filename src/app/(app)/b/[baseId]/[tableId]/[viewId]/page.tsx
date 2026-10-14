@@ -5,7 +5,9 @@ import { filterFieldIssues } from "@/lib/domain/filter";
 import { decodeFilterParam } from "@/lib/domain/query";
 import { hasRole } from "@/lib/domain/user";
 import { routes } from "@/lib/routes";
+import { FormBuilder } from "@/features/forms/FormBuilder";
 import { Grid } from "@/features/grid/Grid";
+import { NewViewButton } from "@/features/table-shell/NewViewButton";
 import { BLOCK_SIZE } from "@/features/grid/GridStore";
 import { TableTabs } from "@/features/table-shell/TableTabs";
 import { ViewTabs } from "@/features/table-shell/ViewTabs";
@@ -46,6 +48,30 @@ export default async function ViewPage({ params, searchParams }: PageProps<"/b/[
   const view = table.views.find((candidate) => candidate.id === viewId);
   if (!view) notFound();
 
+  if (view.kind === "form") {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex items-end gap-4 bg-zinc-100 px-4 pt-2 dark:bg-zinc-950">
+          <span className="pb-1.5 text-sm font-semibold text-zinc-500">{base.name}</span>
+          <TableTabs baseId={baseId} tables={base.tables} activeTableId={tableId} />
+        </div>
+        <div className="flex items-center gap-4 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+          <ViewTabs baseId={baseId} tableId={tableId} views={table.views} activeViewId={viewId} />
+          {hasRole(user.role, "editor") && <NewViewButton baseId={baseId} tableId={tableId} viewCount={table.views.length} />}
+        </div>
+        <FormBuilder
+          key={`${view.id}:${schemaKey(table.fields)}`}
+          view={view}
+          version={getView(view.id)?.version ?? 0}
+          fields={table.fields}
+          tableName={table.name}
+          canEdit={hasRole(user.role, "editor")}
+          publicHref={routes.publicForm(view.id)}
+        />
+      </div>
+    );
+  }
+
   // `?filter=<base64>`: an unsaved filter shared by link. One that doesn't fit the table is ignored, with a notice.
   const linkFilter = typeof filterParam === "string" ? decodeFilterParam(filterParam) : null;
   const linkFilterValid = linkFilter !== null && filterFieldIssues(linkFilter, table.fields).length === 0;
@@ -73,6 +99,7 @@ export default async function ViewPage({ params, searchParams }: PageProps<"/b/[
       </div>
       <div className="flex items-center gap-4 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
         <ViewTabs baseId={baseId} tableId={tableId} views={table.views} activeViewId={viewId} />
+        {hasRole(user.role, "editor") && <NewViewButton baseId={baseId} tableId={tableId} viewCount={table.views.length} />}
         {!hasRole(user.role, "editor") && (
           <span className="ml-auto rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
             Read-only: you are a viewer

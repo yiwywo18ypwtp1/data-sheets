@@ -14,6 +14,7 @@ import { now } from "./clock";
 import { getDb } from "./db";
 import { ApiError, notFound, zodFieldErrors } from "./errors";
 import { appendEvent, type Origin } from "./events";
+import { expireFormCache, formTags } from "./formCache";
 import { recomputeAllRows, SYSTEM_ORIGIN } from "./rowWrites";
 import { linkedRecordLabels, markRowsChanged } from "./rows";
 import { serializeCells, serializeErrors, toRow, type RowRecord } from "./storage";
@@ -134,6 +135,8 @@ function saveFields(table: Table, fields: Field[]): void {
 
 /** Tells open grids: this table's fields changed; other tables only had values recomputed. */
 function announceSchemaChange(tableId: string, recomputed: string[], origin: Origin, deletedFieldId?: string) {
+  // Public forms of this table ask for its fields: their cached definitions are out of date.
+  expireFormCache(formTags.table(tableId));
   getDb().transaction(() => {
     appendEvent(tableId, { kind: "schema", origin, ...(deletedFieldId ? { deletedFieldId } : {}) });
     for (const other of recomputed) if (other !== tableId) appendEvent(other, { kind: "reload", origin });

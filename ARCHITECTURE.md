@@ -11,6 +11,7 @@ Next.js 16 App Router (`cacheComponents`), React 19, SQLite through `better-sqli
 | Grid, selection, editors, clipboard, undo | Client (`features/grid`) | Pointer and keyboard interaction, 60 fps scrolling |
 | View panel, field dialog, formula editor | Client (React Hook Form) | Live validation and previews |
 | CSV import wizard | Client + Web Worker; rows go to a **Server Action** | Parsing 20 MB must not block the page; the action is the mutation boundary |
+| Public form `/f/[viewId]` | Static shell + cached form definition (Server); the form is a Client Component; submit is a **Server Action** | Guests get a cached page; validation runs in the browser and again on the server with the same runtime schema |
 | Data API (`/api/...`) | Route Handlers | The task's REST contract with one error format (`server/api.ts`) |
 | Id checks for `/b/...` URLs | `src/proxy.ts` | Pages stream, so a `notFound()` inside one would answer 200. The proxy checks the ids first, so these URLs get real 404s and 307s |
 
@@ -50,6 +51,8 @@ The pipeline is lexer → Pratt parser → type checker → evaluator (`lib/form
 | View (`PUT /api/views/:id`) | `If-Match` = view version | Each save; a stale version gets 412 with the current view |
 | Client rows | the store's blocks | Query change (filter/sort), row deletes (reload), schema change (the grid remounts, keyed by a hash of the fields) |
 | Import batches | `Idempotency-Key` = import id + batch number, stored with the result | Never; a repeated key returns the stored result |
+| Public form definition (`/f/[viewId]`, `use cache`) | tags `form-view:<id>`, `form-table:<tableId>` | Saving the view, any field change of the table (`revalidateTag(tag, { expire: 0 })`: the next guest gets the new form, never a stale one) |
+| Form submissions | the submission id chosen when the form opens | Never; a repeated submit returns the first result |
 
 The result cache and the data versions live on `globalThis`. Next.js bundles route handlers, pages and Server Actions separately, so module-level state would be one copy per bundle, and an import done by a Server Action would not invalidate what the rows endpoint reads.
 

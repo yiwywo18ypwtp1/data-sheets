@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Field } from "./field";
 import { filterFieldIssues, filterGroupSchema } from "./filter";
+import { formConfigSchema } from "./form";
 import { idSchema } from "./ids";
 
 function hasNoDuplicates(ids: string[]): boolean {
@@ -36,6 +37,8 @@ export const viewSchema = z.object({
   fieldOrder: z.array(idSchema).refine(hasNoDuplicates, "Duplicate field"),
   columnWidths: z.record(idSchema, z.number().int().min(MIN_COLUMN_WIDTH).max(MAX_COLUMN_WIDTH)),
   rowHeight: rowHeightSchema,
+  /** Only for `kind: "form"`: the public form's questions (see form.ts). */
+  form: formConfigSchema.optional(),
 });
 export type View = z.infer<typeof viewSchema>;
 

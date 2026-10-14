@@ -3,4 +3,5 @@ export const routes = {
   view: (baseId: string, tableId: string, viewId: string) => `/b/${baseId}/${tableId}/${viewId}`,
   importCsv: (baseId: string, tableId: string) => `/b/${baseId}/${tableId}/import`,
   settings: () => "/settings",
+  publicForm: (viewId: string) => `/f/${viewId}`,
 };

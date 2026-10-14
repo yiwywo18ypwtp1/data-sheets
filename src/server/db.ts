@@ -55,6 +55,12 @@ const SCHEMA = `
     created_at TEXT NOT NULL,
     PRIMARY KEY (table_id, seq)
   );
+  CREATE TABLE IF NOT EXISTS form_submissions (
+    key TEXT PRIMARY KEY,
+    view_id TEXT NOT NULL,
+    row_id TEXT,
+    created_at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS import_batches (
     key TEXT PRIMARY KEY,
     table_id TEXT NOT NULL REFERENCES tables(id),

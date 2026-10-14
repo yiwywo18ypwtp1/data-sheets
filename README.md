@@ -87,6 +87,12 @@ npm run lint
 - Close the tab mid-import and open the import page again: "Resume" continues where it stopped (the file and choices are kept in IndexedDB), and the total matches the file exactly.
 - Link columns (e.g. Customer in Orders) match records by their name, case-insensitively. Names with no record are errors, or, with "Create the N … values that have no record", new records created before the rows.
 
+### Public forms
+
+- In a table, "+" next to the view tabs → Form. The form view shows its settings: title, description, questions (add, ↑/↓, required, hint) and "show only if" an earlier checkbox or select answer is one of some values. Save, then "Open the form ↗" (`/f/<viewId>`; anyone with the link can answer).
+- The public page is cached and refreshed when the view or the table's fields change. Answers are checked with a zod schema built from the questions on the page and again in the Server Action.
+- A double click (try `MOCK_LATENCY_MS=3000`) creates one record: every submission carries an id chosen when the form opens. Change the table's fields while a guest is filling the form: their submit is refused with an explanation, the form reloads, and their answers stay. A hidden honeypot field and a limit of 5 submissions per minute per IP keep simple spam out. `POST /api/forms/:viewId` does the same for API clients.
+
 ### Edge cases from section 8
 
 | Case | Result |
@@ -107,14 +113,14 @@ npm run lint
 | scroll to the end, Cmd+Z | undoes the early edit and scrolls to it |
 | two tabs: one deletes a row the other is editing / a field the other filters by | the editor closes / the draft resets, each with an explanation |
 | `REALTIME_DROP_RATE=0.3`, a minute of edits | both tabs converge (checked: 60 edits from 2 tabs, identical to the server) |
-| public form | not implemented (Advanced) |
+| public form: double submit with `MOCK_LATENCY_MS=3000` | one record |
+| public form: the schema changes while a guest fills it in | the submit is refused with an explanation; the form reloads with the new questions and keeps the answers |
 
 ## Not done
 
 Planned in this order, with the reason each one waits:
 
-1. **Public form `/f/[viewId]` (2.5).**
-2. **RTL and Playwright tests.** The pure logic is unit-tested (formulas, coercion, filters, mapping, the grid store, undo, selection, the API). The UI flows were checked with ad-hoc Playwright scripts, not committed tests.
+1. **RTL and Playwright tests.** The pure logic is unit-tested (formulas, coercion, filters, mapping, the grid store, undo, selection, the API). The UI flows were checked with ad-hoc Playwright scripts, not committed tests.
 
 Known limitations:
 - Footer sums update on the next window load, not on every edit.
