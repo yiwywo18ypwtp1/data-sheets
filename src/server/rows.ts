@@ -36,8 +36,16 @@ export type RowQuery = {
 type ResultSet = { ids: string[]; aggregates: Aggregates };
 
 const MAX_CACHED_RESULTS = 10; // ~2.5 MB of ids each at 50 000 rows
-const resultCache = new Map<string, ResultSet>();
-const dataVersions = new Map<string, number>();
+/**
+ * On globalThis, like the DB connection: Next.js bundles route handlers, pages and Server
+ * Actions separately, and each bundle can get its own copy of this module. With module
+ * state, rows written by a Server Action (the CSV import) didn't invalidate the cache the
+ * rows endpoint reads.
+ */
+const shared = globalThis as unknown as { rowResults?: { cache: Map<string, ResultSet>; versions: Map<string, number> } };
+shared.rowResults ??= { cache: new Map(), versions: new Map() };
+const resultCache = shared.rowResults.cache;
+const dataVersions = shared.rowResults.versions;
 
 /** Called by every write to a table's rows. */
 export function markRowsChanged(tableId: string): void {

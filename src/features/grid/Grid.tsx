@@ -36,6 +36,8 @@ type GridProps = {
   canChangeSchema: boolean;
   /** Every table of the base with its fields: link targets and lookups in the field dialog. */
   tables: BaseTable[];
+  /** The table's CSV import page, for creators. */
+  importHref: string | null;
   tableName: string;
   fields: Field[];
   primaryFieldId: string;
@@ -58,7 +60,7 @@ const INITIAL_RECT = { width: 1280, height: 800 };
  * through `aria-activedescendant`, which works even though cells come and go as
  * they scroll in and out of view.
  */
-export function Grid({ tableId, canEdit, canChangeSchema, tables, tableName, fields, primaryFieldId, view, viewVersion, initialWindow }: GridProps) {
+export function Grid({ tableId, canEdit, canChangeSchema, tables, importHref, tableName, fields, primaryFieldId, view, viewVersion, initialWindow }: GridProps) {
   const [store] = useState(
     () =>
       new GridStore({
@@ -210,6 +212,7 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, tableName, fie
         panelStatus={panelStatus}
         onTogglePanel={() => setPanelOpen((open) => !open)}
         onAddField={canChangeSchema ? () => setFieldDialog({ mode: "create" }) : null}
+        importHref={importHref}
         onAddRow={addRow}
         onToggleHidden={(fieldId, hidden) => viewLayout.update((layout) => setFieldHidden(layout, fieldId, hidden))}
       />

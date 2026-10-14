@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { useRef, useState } from "react";
 import type { Field } from "@/lib/domain/field";
 import { Popover } from "./editors/Popover";
@@ -18,6 +19,8 @@ type GridToolbarProps = {
   onTogglePanel: () => void;
   /** Set for creators: opens the new-field dialog. */
   onAddField: (() => void) | null;
+  /** Set for creators: the table's CSV import page. */
+  importHref: string | null;
   onAddRow: () => void;
   onToggleHidden: (fieldId: string, hidden: boolean) => void;
 };
@@ -25,7 +28,7 @@ type GridToolbarProps = {
 const buttonClass = "rounded px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:text-zinc-200 dark:hover:bg-zinc-800";
 
 /** Actions above the grid: add a record, show/hide fields, delete the selected records. */
-export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFieldIds, layoutError, panelOpen, panelStatus, onTogglePanel, onAddField, onAddRow, onToggleHidden }: GridToolbarProps) {
+export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFieldIds, layoutError, panelOpen, panelStatus, onTogglePanel, onAddField, importHref, onAddRow, onToggleHidden }: GridToolbarProps) {
   const selectedRows = useGridStore(store, (state) => state.getSelectedRowsKey());
   const pasteExtraRows = useGridStore(store, (state) => state.pastePrompt?.extraRows ?? 0);
   const [confirming, setConfirming] = useState(false);
@@ -60,6 +63,11 @@ export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFiel
         <button type="button" className={buttonClass} onClick={onAddField}>
           + Add field
         </button>
+      )}
+      {importHref && (
+        <Link href={importHref} className={buttonClass}>
+          Import CSV
+        </Link>
       )}
       <button type="button" className={`${buttonClass} ${panelOpen ? "bg-zinc-100 dark:bg-zinc-800" : ""}`} aria-expanded={panelOpen} onClick={onTogglePanel}>
         Filter &amp; sort{panelStatus.active > 0 ? ` · ${panelStatus.active}` : ""}

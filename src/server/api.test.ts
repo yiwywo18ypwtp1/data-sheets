@@ -7,6 +7,7 @@ import * as fieldRoute from "@/app/api/tables/[id]/fields/[fieldId]/route";
 import * as searchRoute from "@/app/api/tables/[id]/records/search/route";
 import * as viewRoute from "@/app/api/views/[id]/route";
 import * as formulaRoute from "@/app/api/formula/check/route";
+import * as importRoute from "@/app/api/tables/[id]/import/route";
 import { encodeFilterParam } from "@/lib/domain/query";
 import type { Row } from "@/lib/domain/row";
 import type { TableMeta } from "@/lib/domain/table";
@@ -281,6 +282,30 @@ describe("GET /api/tables/:id/records/search", () => {
     const response = await searchRoute.GET(get(`/api/tables/tbl_products/records/search?q=${q}`), params({ id: "tbl_products" }));
     const { records } = (await response.json()) as { records: { id: string; label: string }[] };
     expect(records).toContainEqual({ id: "row_p_00003", label: name });
+  });
+});
+
+describe("POST /api/tables/:id/import", () => {
+  const post = (body: unknown, key?: string) =>
+    importRoute.POST(send("POST", "/api/tables/tbl_products/import", body, key ? { "idempotency-key": key } : {}), params({ id: "tbl_products" }));
+  const count = () => (rowsRoute.GET(get("/api/tables/tbl_products/rows?limit=1"), params({ id: "tbl_products" })) as Promise<Response>).then(async (response) => ((await response.json()) as { total: number }).total);
+
+  it("imports a batch once per Idempotency-Key and reports rejected rows", async () => {
+    const before = await count();
+    const body = { rows: [{ fld_p_name: "Imported lamp", fld_p_stock: 3 }, { fld_p_name: "Bad stock", fld_p_stock: "many" }, { fld_p_name: "Imported desk" }] };
+    const first = await post(body, "imp_test:0");
+    expect(first.status).toBe(200);
+    const result = await first.json();
+    expect(result).toMatchObject({ imported: 2, failed: [{ index: 1 }] });
+    // A retry of the same batch (lost response, double click) doesn't import it again.
+    expect(await (await post(body, "imp_test:0")).json()).toEqual(result);
+    expect(await count()).toBe(before + 2);
+  });
+
+  it("requires the key and a creator", async () => {
+    expect((await post({ rows: [{ fld_p_name: "x" }] })).status).toBe(400);
+    userId = "usr_editor";
+    expect((await post({ rows: [{ fld_p_name: "x" }] }, "imp_test:1")).status).toBe(403);
   });
 });
 

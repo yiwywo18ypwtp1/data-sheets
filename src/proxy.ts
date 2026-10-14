@@ -20,6 +20,7 @@ export function proxy(request: NextRequest) {
 
   const table = tableId === undefined ? base.tables[0] : base.tables.find((candidate) => candidate.id === tableId);
   if (!table) return notFound(request);
+  if (viewId === "import") return NextResponse.next(); // the table's CSV import page
   if (viewId === undefined) return NextResponse.redirect(new URL(`/b/${base.id}/${table.id}/${table.defaultViewId}`, request.url), 307);
 
   const view = getView(viewId);

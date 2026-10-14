@@ -34,7 +34,8 @@ describe("parseLocaleNumber", () => {
     expect(parseLocaleNumber(text, locale)).toBe(expected);
   });
 
-  it.each(["abc", "1.2.3,4,5", "12abc", "-", "1,2,3.4.5", ""])("rejects %j", (text) => {
+  // A separator that isn't the decimal one must group thousands: "12.03.2026" is a date, not 12032026.
+  it.each(["abc", "1.2.3,4,5", "12abc", "-", "1,2,3.4.5", "", "12.03.2026", "1,23,456", "12.3456,5"])("rejects %j", (text) => {
     expect(parseLocaleNumber(text, usLocale)).toBeNull();
   });
 });

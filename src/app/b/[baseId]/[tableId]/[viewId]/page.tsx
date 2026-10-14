@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import type { Field } from "@/lib/domain/field";
 import { hasRole } from "@/lib/domain/user";
+import { routes } from "@/lib/routes";
 import { Grid } from "@/features/grid/Grid";
 import { BLOCK_SIZE } from "@/features/grid/GridStore";
 import { TableTabs } from "@/features/table-shell/TableTabs";
@@ -76,6 +77,7 @@ export default async function ViewPage({ params }: PageProps<"/b/[baseId]/[table
         canEdit={hasRole(user.role, "editor")}
         canChangeSchema={hasRole(user.role, "creator")}
         tables={baseTables}
+        importHref={hasRole(user.role, "creator") ? routes.importCsv(baseId, tableId) : null}
         tableName={table.name}
         fields={table.fields}
         primaryFieldId={table.primaryFieldId}

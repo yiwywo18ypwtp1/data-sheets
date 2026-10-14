@@ -48,6 +48,12 @@ const SCHEMA = `
     errors TEXT
   );
   CREATE INDEX IF NOT EXISTS rows_by_table ON rows(table_id, seq);
+  CREATE TABLE IF NOT EXISTS import_batches (
+    key TEXT PRIMARY KEY,
+    table_id TEXT NOT NULL REFERENCES tables(id),
+    result TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
 `;
 
 function openDatabase(file: string): Db {

@@ -52,6 +52,9 @@ export function parseLocaleNumber(input: string, locale: NumberLocale): number |
   if (!/^[\d.,]+$/.test(text) || !/\d/.test(text)) return null;
 
   const decimal = decimalSeparatorOf(text, locale);
+  // Group separators must group thousands: "1.234.567" is a number, "12.03.2026" is a date.
+  const integerPart = decimal === null ? text : text.slice(0, text.lastIndexOf(decimal));
+  if (/[.,]/.test(integerPart) && !/^\d{1,3}([.,]\d{3})*$/.test(integerPart)) return null;
   const normalized =
     decimal === null
       ? text.replace(/[.,]/g, "")
