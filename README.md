@@ -4,7 +4,8 @@ A simplified Airtable built with Next.js App Router. The task statement is in [f
 
 ## Requirements
 
-- Node.js 22 (see `.nvmrc`; run `nvm use`)
+- Node.js 22 or newer (see `.nvmrc`; run `nvm use`). On older Node the native SQLite
+  module crashes the server silently, so `npm run dev/build/start` refuse to start there.
 
 ## Scripts
 
