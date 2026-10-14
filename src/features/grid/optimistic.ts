@@ -13,7 +13,14 @@ import { isFormulaError, toCellValue } from "@/lib/formula/values";
  */
 
 /** One unconfirmed change to one row: one op in a batch. `values` is empty for a delete. */
-export type PendingEdit = { opId: number; op: "create" | "update" | "delete"; rowId: string; values: Record<string, CellValue> };
+export type PendingEdit = {
+  opId: number;
+  op: "create" | "update" | "delete";
+  rowId: string;
+  values: Record<string, CellValue>;
+  /** A create that brings back a deleted record (undo): its original creation time, which keeps its place. */
+  restoreCreatedAt?: string;
+};
 
 /** A row as displayed: may carry per-cell save errors, a "still saving" and a "being deleted" flag. */
 export type DisplayRow = Row & { saveErrors?: Record<string, string>; saving?: boolean; deleting?: boolean };

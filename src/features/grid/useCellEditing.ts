@@ -5,7 +5,8 @@ import type { CommitMove, GridEditing } from "./GridEditingContext";
 import type { GridStore } from "./GridStore";
 import type { HistoryChange } from "./history";
 import type { GridColumn } from "./layout";
-import { collapsed, navigate, rangeOf, type Bounds, type CellPosition, type KeyInput } from "./selection";
+import { fillSeries } from "./fill";
+import { collapsed, navigate, rangeOf, type Bounds, type CellPosition, type KeyInput, type Range } from "./selection";
 
 type Options = {
   store: GridStore;
@@ -105,10 +106,44 @@ export function useCellEditing({ store, columns, canEdit, locale, timeZone, getB
     store.announce(`Cleared ${changes.length} ${changes.length === 1 ? "cell" : "cells"}`);
   }
 
+  /**
+   * Fill: the rows of `source` continue down to `toRow`, per column (a copy, or a
+   * number/date progression, see fill.ts). Rows that aren't loaded are fetched first.
+   * One undo step, like a paste.
+   */
+  async function fill(source: Range, toRow: number) {
+    if (!canEdit) return store.announce("You have view-only access to this table");
+    const count = toRow - source.bottom;
+    if (count <= 0) return;
+    let rows;
+    try {
+      rows = await store.getRowsInRange(source.top, toRow);
+    } catch {
+      return store.announce("Fill cancelled: the view changed");
+    }
+    const sourceRows = rows.slice(0, source.bottom - source.top + 1);
+    const targets = rows.slice(source.bottom - source.top + 1);
+    const changes: HistoryChange[] = [];
+    for (let col = source.left; col <= source.right; col++) {
+      const field = columns[col].field;
+      if (isComputedField(field)) continue;
+      const values = fillSeries(field, sourceRows.map((row) => row.values[field.id] ?? null), targets.length);
+      targets.forEach((row, i) => {
+        if (!sameValue(row.values[field.id], values[i])) {
+          changes.push({ rowId: row.id, fieldId: field.id, before: row.values[field.id] ?? null, after: values[i], row: source.bottom + 1 + i, col });
+        }
+      });
+    }
+    store.applyChanges(`fill of ${changes.length} ${changes.length === 1 ? "cell" : "cells"}`, changes);
+    store.setSelection({ anchor: { row: source.top, col: source.left }, focus: { row: toRow, col: source.right } });
+    store.announce(`Filled ${changes.length} ${changes.length === 1 ? "cell" : "cells"}`);
+  }
+
   /** Undo/redo, then selects and scrolls to the changed cells, wherever they are. */
   function undoOrRedo(redo: boolean) {
     const entry = redo ? store.redo() : store.undo();
     if (!entry) return store.announce(redo ? "Nothing to redo" : "Nothing to undo");
+    if (entry.changes.length === 0) return; // deleted records: they come back (or go) where they belong
     const rows = entry.changes.map((change) => change.row);
     const cols = entry.changes.map((change) => change.col);
     const anchor = { row: Math.min(...rows), col: Math.min(...cols) };
@@ -122,6 +157,12 @@ export function useCellEditing({ store, columns, canEdit, locale, timeZone, getB
     if (!store.editing && mod && (event.key.toLowerCase() === "z" || (event.ctrlKey && event.key.toLowerCase() === "y"))) {
       event.preventDefault();
       return undoOrRedo(event.key.toLowerCase() === "y" || event.shiftKey);
+    }
+    if (!store.editing && mod && event.key.toLowerCase() === "d" && store.selection) {
+      // Fill down, as in a spreadsheet: the top row of the selection into the rows below it.
+      event.preventDefault();
+      const range = rangeOf(store.selection);
+      return void fill({ ...range, bottom: range.top }, range.bottom);
     }
     const active = store.selection?.anchor;
     if (!active || store.editing || event.nativeEvent.isComposing) return;
@@ -143,5 +184,5 @@ export function useCellEditing({ store, columns, canEdit, locale, timeZone, getB
     if (cell) startEditing({ row: Number(cell.dataset.row), col: Number(cell.dataset.col) }, null);
   }
 
-  return { context, handleKey, onDoubleClick };
+  return { context, handleKey, onDoubleClick, fill };
 }

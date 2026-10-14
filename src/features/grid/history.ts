@@ -3,8 +3,14 @@ import type { CellValue } from "@/lib/domain/cell";
 /** One cell changed by a user action, with where it was, to scroll back to it on undo. */
 export type HistoryChange = { rowId: string; fieldId: string; before: CellValue; after: CellValue; row: number; col: number };
 
-/** One undoable action: a cell edit, a cleared range, or a whole paste (one Cmd+Z undoes all of it). */
-export type HistoryEntry = { label: string; changes: HistoryChange[] };
+/** A deleted record as it was, so undo can create it again (same id, same place). */
+export type DeletedRow = { id: string; values: Record<string, CellValue>; createdAt: string };
+
+/**
+ * One undoable action: a cell edit, a cleared range, a fill, a whole paste (one Cmd+Z
+ * undoes all of it), or deleted records.
+ */
+export type HistoryEntry = { label: string; changes: HistoryChange[]; deletedRows?: DeletedRow[] };
 
 export const HISTORY_LIMIT = 100;
 
@@ -14,7 +20,7 @@ export class History {
   private undone: HistoryEntry[] = [];
 
   push(entry: HistoryEntry): void {
-    if (entry.changes.length === 0) return;
+    if (entry.changes.length === 0 && !entry.deletedRows?.length) return;
     this.done.push(entry);
     if (this.done.length > HISTORY_LIMIT) this.done.shift();
     this.undone = [];

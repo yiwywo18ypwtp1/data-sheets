@@ -300,6 +300,26 @@ describe("GridStore writes", () => {
     expect(store.getRowAt(4)?.values).toMatchObject({ n: 400, note: "mine" });
   });
 
+  it("undoes a deletion by creating the same records again, with their values and creation time", async () => {
+    const { store, batches } = setup();
+    const victim = store.getRowAt(7)!;
+    store.deleteRows([victim.id]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(batches[0].ops).toEqual([{ op: "delete", rowId: victim.id, rev: victim.rev }]);
+    batches[0].answer([{ ok: true, rowId: victim.id, row: null }]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    store.undo();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(batches[1].ops).toEqual([{ op: "create", rowId: victim.id, values: { n: 7 }, createdAt: victim.createdAt }]);
+    batches[1].answer([{ ok: true, rowId: victim.id, row: victim }]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    store.redo();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(batches[2].ops[0]).toMatchObject({ op: "delete", rowId: victim.id });
+  });
+
   it("reports a conflict when another user overwrites a cell this tab saved", async () => {
     const { store, batches } = setup();
     store.writeCells([{ rowId: "row_a_5", fieldId: "n", value: 50 }]);

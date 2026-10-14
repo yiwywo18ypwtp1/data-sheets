@@ -155,3 +155,23 @@ describe("computeFields", () => {
     expect(result.errors).toEqual({ ratio: "#DIV/0! Division by zero", broken: '#REF! Unknown field "deleted"' });
   });
 });
+
+describe("restoring deleted rows", () => {
+  it("brings a record back with its id, values and place in creation order", () => {
+    const table = getTable(TABLE_IDS.products)!;
+    const unsorted = () => queryRows(table, { filter: { conjunction: "and", conditions: [], groups: [] }, sorts: [], offset: 0, limit: 10, context }).rows.map((row) => row.id);
+    const before = unsorted();
+    const [victim, next] = getRowsByIds(TABLE_IDS.products, [before[2], before[3]]);
+    applyRowBatch(products, [
+      { op: "delete", rowId: victim.id, rev: victim.rev },
+      { op: "delete", rowId: next.id, rev: next.rev },
+    ]);
+    const results = applyRowBatch(products, [
+      { op: "create", rowId: next.id, values: { fld_p_name: next.values.fld_p_name as string }, createdAt: next.createdAt },
+      { op: "create", rowId: victim.id, values: { fld_p_name: victim.values.fld_p_name as string }, createdAt: victim.createdAt },
+    ]);
+    expect(results.every((result) => result.ok)).toBe(true);
+    expect(unsorted()).toEqual(before);
+    expect(getRow(TABLE_IDS.products, victim.id).createdAt).toBe(victim.createdAt);
+  });
+});

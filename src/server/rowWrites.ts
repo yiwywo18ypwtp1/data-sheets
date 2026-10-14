@@ -159,6 +159,20 @@ function addChanges(changes: Map<string, TableChanges>, tableId: string, rowIds:
   for (const id of fieldIds) entry.fieldIds.add(id);
 }
 
+/**
+ * A restored record (undo of a delete) goes back between the records created just before
+ * and after it, so it reappears where it was in creation order. `seq` may become fractional.
+ */
+function restoredSeq(tableId: string, createdAt: string): number {
+  const { before, after } = getDb()
+    .prepare(
+      `SELECT (SELECT coalesce(max(seq), 0) FROM rows WHERE table_id = ? AND created_at < ?) AS before,
+              (SELECT min(seq) FROM rows WHERE table_id = ? AND created_at > ?) AS after`,
+    )
+    .get(tableId, createdAt, tableId, createdAt) as { before: number; after: number | null };
+  return after === null ? before + 1 : (before + after) / 2;
+}
+
 function createRow(tableId: string, op: Extract<RowOp, { op: "create" }>, batch: BatchContext): Row {
   // Ids are global, not per table: a client-generated id must not collide anywhere.
   if (getDb().prepare("SELECT 1 FROM rows WHERE id = ?").get(op.rowId)) {
@@ -174,10 +188,10 @@ function createRow(tableId: string, op: Extract<RowOp, { op: "create" }>, batch:
     readLinked,
     batch.evalContext,
   );
-  const { seq } = getDb().prepare("SELECT coalesce(max(seq), 0) + 1 AS seq FROM rows WHERE table_id = ?").get(tableId) as { seq: number };
+  const seq = op.createdAt ? restoredSeq(tableId, op.createdAt) : (getDb().prepare("SELECT coalesce(max(seq), 0) + 1 AS seq FROM rows WHERE table_id = ?").get(tableId) as { seq: number }).seq;
   getDb()
     .prepare("INSERT INTO rows (id, table_id, seq, rev, created_at, updated_at, cells, errors) VALUES (?, ?, ?, 1, ?, ?, ?, ?)")
-    .run(op.rowId, tableId, seq, batch.timestamp, batch.timestamp, serializeCells(computed.values), serializeErrors(computed.errors));
+    .run(op.rowId, tableId, seq, op.createdAt ?? batch.timestamp, batch.timestamp, serializeCells(computed.values), serializeErrors(computed.errors));
   batch.log.touch(tableId, op.rowId, Object.keys(values), true);
   // A brand-new row isn't linked from anywhere yet, so nothing else needs recomputing.
   return toRow(loadRow(tableId, op.rowId)!);

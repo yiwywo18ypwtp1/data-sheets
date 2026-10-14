@@ -49,7 +49,8 @@ npm run lint
 - **Copy and paste.** Copy a range and paste it into Google Sheets, then back. Paste one column into a 5-column selection and it's repeated. Pasting past the last row offers to add rows. Values that can't be converted get a red frame and a tooltip; they are never emptied silently.
 - **Undo.** Cmd+Z undoes a whole paste in one step, Shift+Cmd+Z redoes it. Edit row 1, scroll to the end, press Cmd+Z: the edit is undone and the grid scrolls back to it.
 - **Failures.** Restart with `MOCK_FAILURE_RATE=0.5` and edit a few cells: a batch that fails as a whole (503) stays queued and is sent again ("Offline · N changes waiting"). Cells the server rejects (e.g. a number over the field's max via the API) roll back with a red frame; the other cells keep their edits.
-- **Rows and columns.** "+ Add record"; select rows and delete them. Column menu (⋯): move, hide. Drag a header edge to resize. Order, widths and hidden fields are saved to the view at once.
+- **Fill.** Select 10 and 20 in a number column and drag the small square at the selection's corner down: 30, 40, 50. Dates continue the same way; one value or text is copied. Cmd/Ctrl+D fills the selection from its top row. One Cmd+Z undoes the fill.
+- **Rows and columns.** "+ Add record"; select rows and delete them; Cmd+Z brings them back with the same values and in the same place (links that pointed to them from other tables aren't restored). Column menu (⋯): move, hide. Drag a header edge to resize. Order, widths and hidden fields are saved to the view at once.
 
 ### Realtime: two tabs (or two users from /settings in two browsers)
 
@@ -109,7 +110,7 @@ npm run lint
 
 Planned in this order, with the reason each one waits:
 
-1. **Grouping, fill handle, undo of row deletion (2.1 Advanced).** Grouping needs group headers in the virtual row model (`[header, rows…]` index mapping).
+1. **Grouping (2.1 Advanced).** Needs group headers in the virtual row model (`[header, rows…]` index mapping) and per-group aggregates from the server.
 2. **Import resume after reload and link columns (2.4 Advanced).** Resume needs the import id and progress in `sessionStorage`, plus the stored batch keys the server already keeps.
 3. **Public form `/f/[viewId]` (2.5).**
 4. **RTL and Playwright tests.** The pure logic is unit-tested (formulas, coercion, filters, mapping, the grid store, undo, selection, the API). The UI flows were checked with ad-hoc Playwright scripts, not committed tests.

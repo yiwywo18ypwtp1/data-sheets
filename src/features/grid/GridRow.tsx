@@ -20,6 +20,8 @@ type GridRowProps = {
   scrollable: GridColumn[];
   virtualColumns: VirtualItem[];
   formatters: Map<string, CellFormatter>;
+  /** Show the fill handle on the selection's bottom-right cell. */
+  canFill: boolean;
 };
 
 export const cellId = (idPrefix: string, row: number, col: number) => `${idPrefix}-r${row}-c${col}`;
@@ -62,7 +64,7 @@ function Placeholder() {
  * all their cells would re-render each frame although their props didn't change.
  * With `memo`, vertical scrolling only mounts the rows that come into view.
  */
-export const GridRow = memo(function GridRow({ store, idPrefix, index, top, height, width, pinned, scrollable, virtualColumns, formatters }: GridRowProps) {
+export const GridRow = memo(function GridRow({ store, idPrefix, index, top, height, width, pinned, scrollable, virtualColumns, formatters, canFill }: GridRowProps) {
   const row = useGridStore(store, (state) => state.getRowAt(index));
   const status = useGridStore(store, (state) => state.getRowStatus(index));
   const selection = parseRowSelectionKey(useGridStore(store, (state) => state.getRowSelectionKey(index)));
@@ -88,7 +90,7 @@ export const GridRow = memo(function GridRow({ store, idPrefix, index, top, heig
         title={saveError ?? (other ? `${other[2]} is here` : undefined)}
         data-row={index}
         data-col={col}
-        className={`${cellClass} ${className}`}
+        className={`${cellClass} ${className} ${className.includes("absolute") ? "" : "relative"}`}
         // A cell whose save failed keeps a red frame (over the selection's) until it's edited again.
         style={{ ...style, ...otherStyle, ...selectedStyle, ...(saveError ? { boxShadow: `inset 0 0 0 2px ${ERROR_COLOR}` } : {}) }}
       >
@@ -105,6 +107,10 @@ export const GridRow = memo(function GridRow({ store, idPrefix, index, top, heig
         ) : col === 0 && status === "loading" ? (
           <Placeholder />
         ) : null}
+        {canFill && selection?.bottom && col === selection.right && editingCol === -1 && (
+          // Drag down to fill (Cmd/Ctrl+D from the keyboard does the same from the top row).
+          <span data-fill-handle aria-hidden title="Drag down to fill" className="absolute right-0 bottom-0 z-10 size-2 cursor-crosshair border border-white bg-blue-600" />
+        )}
       </div>
     );
   };

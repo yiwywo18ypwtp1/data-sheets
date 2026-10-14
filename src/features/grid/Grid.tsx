@@ -167,7 +167,6 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
     else columnVirtualizer.scrollToIndex(cell.col - 1, { align: "auto" });
   };
 
-  const selection = useGridSelection(store, getBounds, scrollToCell);
   const editing = useCellEditing({
     store,
     columns,
@@ -178,6 +177,7 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
     scrollToCell,
     focusGrid: () => scrollRef.current?.focus({ preventScroll: true }),
   });
+  const selection = useGridSelection(store, getBounds, scrollToCell, (source, toRow) => void editing.fill(source, toRow));
   const clipboard = useClipboard({ store, columns, canEdit, locale, timeZone, formatters });
   const realtimeStatus = useRealtime({
     tableId,
@@ -319,6 +319,7 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
                 scrollable={scrollable}
                 virtualColumns={virtualColumns}
                 formatters={formatters}
+                canFill={canEdit}
               />
             ))}
             <GridFooter

@@ -25,7 +25,13 @@ const rowValues = z.record(idSchema, cellValueSchema);
  * `create` carries a client-generated id so an optimistic row keeps its identity.
  */
 export const rowOpSchema = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("create"), rowId: idSchema, values: rowValues }),
+  z.object({
+    op: z.literal("create"),
+    rowId: idSchema,
+    values: rowValues,
+    /** Set when undo brings back a deleted record: it keeps its creation time and its place in creation order. */
+    createdAt: z.iso.datetime().optional(),
+  }),
   z.object({ op: z.literal("update"), rowId: idSchema, values: rowValues, rev: z.number().int().nonnegative() }),
   z.object({ op: z.literal("delete"), rowId: idSchema, rev: z.number().int().nonnegative() }),
 ]);

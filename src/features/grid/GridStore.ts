@@ -1,11 +1,11 @@
 import type { Aggregates, RowWindowResponse } from "@/lib/domain/api";
 import type { CellValue } from "@/lib/domain/cell";
-import type { Field } from "@/lib/domain/field";
+import { isComputedField, type Field } from "@/lib/domain/field";
 import { usesRelativeDates } from "@/lib/domain/filter";
 import { newId } from "@/lib/domain/ids";
 import { MAX_BATCH_OPS, type Row, type RowOp, type RowOpResult } from "@/lib/domain/row";
 import type { RowQuery } from "./api";
-import { History, type HistoryChange, type HistoryEntry } from "./history";
+import { History, type DeletedRow, type HistoryChange, type HistoryEntry } from "./history";
 import { buildFormulaContext, displayRow, type DisplayRow, type FormulaContext, type PendingEdit } from "./optimistic";
 import type { PresenceEntry, RowChange } from "./realtime";
 import { rangeOf, rowSelectionKey, type Selection } from "./selection";
@@ -267,6 +267,7 @@ export class GridStore {
   undo(): HistoryEntry | null {
     const entry = this.history.undo();
     if (!entry) return null;
+    if (entry.deletedRows) this.restoreRows(entry.deletedRows);
     this.writeCells(entry.changes.map(({ rowId, fieldId, before }) => ({ rowId, fieldId, value: before })));
     this.announce(`Undid ${entry.label}`);
     return entry;
@@ -275,6 +276,7 @@ export class GridStore {
   redo(): HistoryEntry | null {
     const entry = this.history.redo();
     if (!entry) return null;
+    if (entry.deletedRows) this.sendDeletes(entry.deletedRows.map((row) => row.id));
     this.writeCells(entry.changes.map(({ rowId, fieldId, after }) => ({ rowId, fieldId, value: after })));
     this.announce(`Redid ${entry.label}`);
     return entry;
@@ -345,11 +347,30 @@ export class GridStore {
 
   /**
    * Deletes records. Not optimistic: the rows are shown as "deleting" until the server
-   * confirms, then the windows are reloaded. Removing rows from the middle of loaded
-   * blocks would shift every index after them, and deletion can't be undone in Core.
+   * confirms, then the windows are reloaded (removing rows from the middle of loaded
+   * blocks would shift every index after them). The records' values are kept in the
+   * history, so Cmd+Z creates them again.
    */
   deleteRows(rowIds: string[]): void {
+    const deletedRows: DeletedRow[] = rowIds.flatMap((id) => {
+      const row = this.display.get(id) ?? this.rows.get(id);
+      if (!row) return [];
+      // Computed cells are recomputed by the server; only what was typed is restored.
+      const values = Object.fromEntries(Object.entries(row.values).filter(([fieldId]) => !this.formulas.fieldsById.get(fieldId) || !isComputedField(this.formulas.fieldsById.get(fieldId)!)));
+      return [{ id, values, createdAt: row.createdAt }];
+    });
+    this.history.push({ label: `deletion of ${rowIds.length} ${rowIds.length === 1 ? "record" : "records"}`, changes: [], deletedRows });
+    this.sendDeletes(rowIds);
+  }
+
+  private sendDeletes(rowIds: string[]) {
     for (const rowId of rowIds) this.enqueue({ opId: this.nextOpId++, op: "delete", rowId, values: {} });
+    this.notify();
+  }
+
+  /** Undo of a deletion: the same records, with the same ids, back in their place. */
+  private restoreRows(rows: DeletedRow[]) {
+    for (const row of rows) this.enqueue({ opId: this.nextOpId++, op: "create", rowId: row.id, values: row.values, restoreCreatedAt: row.createdAt });
     this.notify();
   }
 
@@ -397,8 +418,8 @@ export class GridStore {
     // Failed creates announce themselves in `settle`; this counts edits and deletes.
     const failed = batch.filter((edit, i) => edit.op !== "create" && !results[i]?.ok).length;
     if (failed > 0) this.announce(`${failed} ${failed === 1 ? "change" : "changes"} couldn't be saved`);
-    // Deleted rows leave holes in the loaded windows: load them again.
-    if (batch.some((edit, i) => edit.op === "delete" && results[i]?.ok)) this.reload();
+    // Deleted rows leave holes in the loaded windows, restored ones need their place: load them again.
+    if (batch.some((edit, i) => (edit.op === "delete" || edit.restoreCreatedAt) && results[i]?.ok)) this.reload();
     this.notify();
     if (this.queue.length > 0) void this.flush();
   }
@@ -431,7 +452,7 @@ export class GridStore {
 
   private toRowOp(edit: PendingEdit): RowOp {
     const rev = this.rows.get(edit.rowId)?.rev ?? 0;
-    if (edit.op === "create") return { op: "create", rowId: edit.rowId, values: edit.values };
+    if (edit.op === "create") return { op: "create", rowId: edit.rowId, values: edit.values, ...(edit.restoreCreatedAt ? { createdAt: edit.restoreCreatedAt } : {}) };
     if (edit.op === "delete") return { op: "delete", rowId: edit.rowId, rev };
     return { op: "update", rowId: edit.rowId, values: edit.values, rev };
   }
@@ -448,6 +469,9 @@ export class GridStore {
         for (const [fieldId, value] of Object.entries(edit.values)) this.confirmed.set(`${edit.rowId}:${fieldId}`, { value, rev: result.row.rev, at: Date.now() });
       }
       if (edit.op === "delete") this.forgetRow(edit.rowId);
+    } else if (edit.op === "create" && edit.restoreCreatedAt) {
+      this.announce("Couldn't restore a deleted record");
+      return;
     } else if (edit.op === "create") {
       // The record doesn't exist on the server, so it disappears (with any edits made to it meanwhile).
       this.forgetRow(edit.rowId);

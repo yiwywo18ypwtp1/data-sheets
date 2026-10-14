@@ -1,8 +1,9 @@
 import { useEffect, useRef, type KeyboardEvent, type PointerEvent } from "react";
 import type { GridStore } from "./GridStore";
-import { collapsed, movedCorner, navigate, selectColumns, selectRows, type Bounds, type CellPosition, type Selection } from "./selection";
+import { collapsed, movedCorner, navigate, rangeOf, selectColumns, selectRows, type Bounds, type CellPosition, type Range, type Selection } from "./selection";
 
-type Drag = { kind: "cells" } | { kind: "rows" } | { kind: "columns" };
+/** A fill drag remembers the range it started from: the selection grows over the target rows meanwhile. */
+type Drag = { kind: "cells" } | { kind: "rows" } | { kind: "columns" } | { kind: "fill"; source: Range; toRow: number };
 
 /** What the pointer is over, read from data attributes on cells, row numbers and headers. */
 function hitTest(target: EventTarget | null): { kind: "cell"; cell: CellPosition } | { kind: "row"; row: number } | { kind: "column"; col: number } | null {
@@ -21,12 +22,18 @@ function hitTest(target: EventTarget | null): { kind: "cell"; cell: CellPosition
  * functions; this hook only translates DOM events into them and scrolls the moved
  * cell into view.
  */
-export function useGridSelection(store: GridStore, getBounds: () => Bounds, scrollToCell: (cell: CellPosition) => void) {
+export function useGridSelection(store: GridStore, getBounds: () => Bounds, scrollToCell: (cell: CellPosition) => void, onFill: (source: Range, toRow: number) => void) {
   const drag = useRef<Drag | null>(null);
+  const onFillRef = useRef(onFill);
+  useEffect(() => {
+    onFillRef.current = onFill;
+  });
 
   useEffect(() => {
     const stop = () => {
+      const finished = drag.current;
       drag.current = null;
+      if (finished?.kind === "fill" && finished.toRow > finished.source.bottom) onFillRef.current(finished.source, finished.toRow);
     };
     window.addEventListener("pointerup", stop);
     return () => window.removeEventListener("pointerup", stop);
@@ -45,6 +52,12 @@ export function useGridSelection(store: GridStore, getBounds: () => Bounds, scro
 
   function onPointerDown(event: PointerEvent<HTMLElement>) {
     if (event.button !== 0 || (event.target instanceof Element && event.target.closest("a, button"))) return;
+    if (event.target instanceof Element && event.target.closest("[data-fill-handle]") && store.selection) {
+      event.preventDefault();
+      const source = rangeOf(store.selection);
+      drag.current = { kind: "fill", source, toRow: source.bottom };
+      return;
+    }
     const hit = hitTest(event.target);
     if (!hit) return;
     const bounds = getBounds();
@@ -70,6 +83,16 @@ export function useGridSelection(store: GridStore, getBounds: () => Bounds, scro
     const current = store.selection;
     const hit = hitTest(event.target);
     if (!drag.current || !current || !hit) return;
+    if (drag.current.kind === "fill") {
+      // Fill goes down only: the selection grows to the row under the pointer.
+      const { source } = drag.current;
+      const toRow = hit.kind === "cell" ? Math.max(source.bottom, hit.cell.row) : drag.current.toRow;
+      if (toRow !== drag.current.toRow) {
+        drag.current = { ...drag.current, toRow };
+        store.setSelection({ anchor: { row: source.top, col: source.left }, focus: { row: toRow, col: source.right } });
+      }
+      return;
+    }
     const bounds = getBounds();
     const row = hit.kind === "cell" ? hit.cell.row : hit.kind === "row" ? hit.row : null;
     const col = hit.kind === "cell" ? hit.cell.col : hit.kind === "column" ? hit.col : null;
