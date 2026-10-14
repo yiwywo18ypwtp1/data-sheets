@@ -74,8 +74,10 @@ export default async function ViewPage({ params, searchParams }: PageProps<"/b/[
 
   // `?filter=<base64>`: an unsaved filter shared by link. One that doesn't fit the table is ignored, with a notice.
   const linkFilter = typeof filterParam === "string" ? decodeFilterParam(filterParam) : null;
-  const linkFilterValid = linkFilter !== null && filterFieldIssues(linkFilter, table.fields).length === 0;
-  const linkFilterError = typeof filterParam === "string" && !linkFilterValid ? "The filter in the link doesn't fit this table and was ignored." : null;
+  const linkFilterFits = linkFilter !== null && filterFieldIssues(linkFilter, table.fields).length === 0;
+  const linkFilterError = typeof filterParam === "string" && !linkFilterFits ? "The filter in the link doesn't fit this table and was ignored." : null;
+  // A link whose filter is the saved one is just a link to the view.
+  const linkFilterValid = linkFilterFits && JSON.stringify(linkFilter) !== JSON.stringify(view.filter);
 
   // The viewer's time zone isn't known on the server; UTC only matters for "today" filters.
   const initialWindow = queryRows(table, {

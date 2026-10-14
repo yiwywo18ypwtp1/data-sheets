@@ -84,6 +84,10 @@ Setup: Apple M1, Node 22, `next build && next start`, the 50 000-row seed, headl
 - **CSV import of 20 MB** (180 000 rows × 6 columns): parsed in the worker in 0.3 s, checked against the runtime schema in 1.4 s, imported in about 28 s (360 batches of 500 rows), 0 long tasks on the page.
 - **Writes.** A 1 000-cell batch takes about 80 ms. One Customer edit that propagates to its Orders' lookups takes about 57 ms.
 
+## Tests
+
+Unit and API tests (Vitest) cover the pure parts and the server through its route handlers, against an in-memory seeded database; component tests (React Testing Library, jsdom) cover the grid's keyboard and editing, the filter tree and the import mapping; four Playwright scenarios run against a production build: a saved view surviving a reload, paste with one-step undo/redo, an import with fixed and skipped errors, and two tabs merging edits and reporting a conflict. All unit tests run in two time zones.
+
 ## Rejected alternatives
 
 - **TanStack Table.** Sorting, filtering and grouping happen on the server, and the grid needs its own selection model. Only TanStack Virtual is used.

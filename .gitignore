@@ -42,3 +42,8 @@ next-env.d.ts
 
 # local sqlite database
 /data/*.db*
+
+# e2e
+/.e2e/
+/test-results/
+/playwright-report/

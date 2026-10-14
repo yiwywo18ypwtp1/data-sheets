@@ -102,6 +102,8 @@ export function ViewPanel({ open, fields, saved, save, onApply, onStatusChange, 
     try {
       const view = await save(query);
       form.reset(pick(view));
+      // The saved filter is the view's now: the address bar stops carrying it at once (not after the debounce).
+      syncFilterParam(view.filter, JSON.stringify(view.filter));
       setSaveError(null);
     } catch (error) {
       setSaveError(error instanceof ApiRequestError ? `Couldn't save the view: ${error.message}` : "Couldn't save the view");

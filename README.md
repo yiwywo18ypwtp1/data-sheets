@@ -2,7 +2,7 @@
 
 A simplified Airtable: typed columns, an editable virtualized grid over 50 000 rows, formulas with a dependency graph, saved views and a CSV import wizard. Built with Next.js 16 (App Router), React 19, TypeScript strict and SQLite. The task statement is in [frontend-task-data-sheets.md](frontend-task-data-sheets.md); design decisions and measurements are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-**Scope: Core.** What's not done is listed [at the end](#not-done), with a plan.
+**Scope: Core and Advanced.** Bonus isn't done; the limitations are listed [at the end](#not-done).
 
 ## Running it
 
@@ -33,8 +33,10 @@ Users are switched on **/settings** (a cookie): Cora Creator (creator, the defau
 ### Scripts
 
 ```bash
-npm test            # unit + API tests (Vitest), ~0.7 s
+npm test            # unit, API and component (React Testing Library) tests, Vitest, ~3 s
 npm run test:tz     # the same in Pacific/Auckland and America/Los_Angeles (both always run)
+npm run test:e2e    # Playwright: builds, starts on :3100 with a fresh database, runs the 4 scenarios
+                    # (uses the installed Google Chrome; or `npx playwright install chromium` and drop `channel`)
 npm run typecheck   # next typegen + tsc --noEmit
 npm run lint
 ```
@@ -118,9 +120,7 @@ npm run lint
 
 ## Not done
 
-Planned in this order, with the reason each one waits:
-
-1. **RTL and Playwright tests.** The pure logic is unit-tested (formulas, coercion, filters, mapping, the grid store, undo, selection, the API). The UI flows were checked with ad-hoc Playwright scripts, not committed tests.
+- **Bonus** (kanban, cell history, CSV export, offline with IndexedDB, comments): not started.
 
 Known limitations:
 - Footer sums update on the next window load, not on every edit.
@@ -128,3 +128,7 @@ Known limitations:
 - Delete and copy of a full column work only for loaded rows (copy fetches the missing ones).
 - Lookups display the target's raw text (not locale-formatted).
 - A schema change remounts the grid, which drops the undo history and the panel's unsaved draft.
+- Undo of a deletion restores the records, but not links to them from other tables.
+- `TODAY()` in formulas is evaluated when a row is written, so it goes stale until the row changes.
+- Offset windows: after an edit that moves a row in the current sort (or a row added by someone), a row can repeat or be skipped at a block boundary until the windows reload.
+- Realtime presence and rate limits live in the server's memory (one process), as a mock would.

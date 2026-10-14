@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "typecheck": "next typegen && tsc --noEmit",
     "test:tz": "TZ=Pacific/Auckland vitest run; auckland=$?; TZ=America/Los_Angeles vitest run; la=$?; exit $((auckland || la))",
-    "db:reset": "rm -f data/data-sheets.db data/data-sheets.db-wal data/data-sheets.db-shm"
+    "db:reset": "rm -f data/data-sheets.db data/data-sheets.db-wal data/data-sheets.db-shm",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",
