@@ -35,7 +35,11 @@ export const viewSchema = z.object({
 });
 export type View = z.infer<typeof viewSchema>;
 
-/** The part of a view edited in the view panel (one RHF form). */
+/** The part of a view edited in the view panel (one RHF form): what rows are shown, and in what order. */
+export const viewQuerySchema = viewSchema.pick({ filter: true, sorts: true });
+export type ViewQuery = z.infer<typeof viewQuerySchema>;
+
+/** Everything in a view that refers to fields, checked against the table on save. */
 export const viewConfigSchema = viewSchema.pick({ filter: true, sorts: true, hiddenFieldIds: true });
 export type ViewConfig = z.infer<typeof viewConfigSchema>;
 
@@ -44,30 +48,39 @@ export function isSortable(field: Field): boolean {
   return field.type !== "link" && field.type !== "multiSelect" && field.type !== "lookup";
 }
 
-/**
- * The view config schema checked against the table's current fields.
- * The same schema is used by the view panel (zodResolver) and by the server when saving,
- * so both sides reject the same things with the same messages.
- */
-export function viewConfigSchemaFor(fields: Field[]) {
-  const fieldsById = new Map(fields.map((field) => [field.id, field]));
+type IssueContext = { addIssue: (issue: { code: "custom"; path: (string | number)[]; message: string }) => void };
 
-  return viewConfigSchema.superRefine((config, ctx) => {
-    for (const issue of filterFieldIssues(config.filter, fields)) {
-      ctx.addIssue({ code: "custom", path: ["filter", ...issue.path], message: issue.message });
+function addQueryIssues(query: ViewQuery, fields: Field[], ctx: IssueContext) {
+  const fieldsById = new Map(fields.map((field) => [field.id, field]));
+  for (const issue of filterFieldIssues(query.filter, fields)) {
+    ctx.addIssue({ code: "custom", path: ["filter", ...issue.path], message: issue.message });
+  }
+  query.sorts.forEach((sort, i) => {
+    const field = fieldsById.get(sort.fieldId);
+    if (!field) {
+      ctx.addIssue({ code: "custom", path: ["sorts", i, "fieldId"], message: "Field no longer exists" });
+    } else if (!isSortable(field)) {
+      ctx.addIssue({ code: "custom", path: ["sorts", i, "fieldId"], message: "This field can't be sorted" });
     }
-    config.sorts.forEach((sort, i) => {
-      const field = fieldsById.get(sort.fieldId);
-      if (!field) {
-        ctx.addIssue({ code: "custom", path: ["sorts", i, "fieldId"], message: "Field no longer exists" });
-      } else if (!isSortable(field)) {
-        ctx.addIssue({ code: "custom", path: ["sorts", i, "fieldId"], message: "This field can't be sorted" });
-      }
-    });
+  });
+}
+
+/**
+ * The view panel's schema checked against the table's current fields. The panel
+ * (zodResolver) and the server (on save) use the same rules, so both sides reject
+ * the same things with the same messages.
+ */
+export function viewQuerySchemaFor(fields: Field[]) {
+  return viewQuerySchema.superRefine((query, ctx) => addQueryIssues(query, fields, ctx));
+}
+
+/** `viewQuerySchemaFor` plus hidden fields: what the server checks when a view is saved. */
+export function viewConfigSchemaFor(fields: Field[]) {
+  const fieldIds = new Set(fields.map((field) => field.id));
+  return viewConfigSchema.superRefine((config, ctx) => {
+    addQueryIssues(config, fields, ctx);
     config.hiddenFieldIds.forEach((id, i) => {
-      if (!fieldsById.has(id)) {
-        ctx.addIssue({ code: "custom", path: ["hiddenFieldIds", i], message: "Field no longer exists" });
-      }
+      if (!fieldIds.has(id)) ctx.addIssue({ code: "custom", path: ["hiddenFieldIds", i], message: "Field no longer exists" });
     });
   });
 }

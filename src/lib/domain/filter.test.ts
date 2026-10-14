@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Field } from "./field";
 import {
+  changeOperator,
   defaultConditionFor,
   emptyCondition,
   filterConditionSchema,
@@ -29,6 +30,16 @@ describe("filter conditions", () => {
     expect(defaultConditionFor(fields[3])).toEqual({ fieldId: "status", operator: "isAnyOf", value: [] });
     // formulas filter by their result type
     expect(defaultConditionFor(fields[5]).operator).toBe("eq");
+  });
+
+  it("changing the operator keeps a value of the same shape and drops the rest", () => {
+    expect(changeOperator({ fieldId: "name", operator: "contains", value: "ab" }, "is")).toEqual({ fieldId: "name", operator: "is", value: "ab" });
+    expect(changeOperator({ fieldId: "qty", operator: "eq", value: 5 }, "gt")).toEqual({ fieldId: "qty", operator: "gt", value: 5 });
+    expect(changeOperator({ fieldId: "qty", operator: "eq", value: 5 }, "between")).toEqual({ fieldId: "qty", operator: "between", value: { min: null, max: null } });
+    expect(changeOperator({ fieldId: "due", operator: "is", value: "2026-01-01" }, "isToday")).toEqual({ fieldId: "due", operator: "isToday" });
+    expect(changeOperator({ fieldId: "due", operator: "isToday" }, "before")).toEqual({ fieldId: "due", operator: "before", value: "" });
+    // Same shape, but not a valid value for the new operator.
+    expect(changeOperator({ fieldId: "due", operator: "before", value: "2026-01-01" }, "withinLastDays")).toEqual({ fieldId: "due", operator: "withinLastDays", value: null });
   });
 
   it("an operator without a value produces no value key", () => {

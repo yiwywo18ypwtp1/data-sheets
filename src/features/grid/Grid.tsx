@@ -1,11 +1,12 @@
 "use client";
 
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { RowWindowResponse } from "@/lib/domain/api";
 import type { Field } from "@/lib/domain/field";
-import type { View } from "@/lib/domain/view";
+import type { View, ViewQuery } from "@/lib/domain/view";
 import { createCellFormatter } from "@/lib/format";
+import { ViewPanel } from "@/features/view-panel/ViewPanel";
 import { fetchRowWindow, sendRowBatch } from "./api";
 import { GridFooter } from "./GridFooter";
 import { GridHeader } from "./GridHeader";
@@ -19,6 +20,7 @@ import { useClipboard } from "./useClipboard";
 import { GridEditingContext } from "./GridEditingContext";
 import { useGridSelection } from "./useGridSelection";
 import { useGridStore } from "./useGridStore";
+import { useSavedView } from "./useSavedView";
 import { useViewerLocale } from "./useViewerLocale";
 import { useViewLayout } from "./useViewLayout";
 
@@ -68,7 +70,18 @@ export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view
   const aggregates = useGridStore(store, (state) => state.aggregates);
   const activeCell = useGridStore(store, (state) => (state.selection ? `${state.selection.anchor.row}:${state.selection.anchor.col}` : null));
 
-  const viewLayout = useViewLayout(view, viewVersion, canEdit);
+  const savedView = useSavedView(view, viewVersion);
+  const viewLayout = useViewLayout(view, canEdit ? savedView.save : null);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelStatus, setPanelStatus] = useState({ dirty: false, active: view.sorts.length });
+  const applyQuery = useCallback(
+    ({ filter, sorts }: ViewQuery) => {
+      if (JSON.stringify({ filter, sorts }) !== JSON.stringify({ filter: store.query.filter, sorts: store.query.sorts })) {
+        store.setQuery({ ...store.query, filter, sorts });
+      }
+    },
+    [store],
+  );
   const columns = useMemo(() => gridColumns(fields, primaryFieldId, viewLayout.layout), [fields, primaryFieldId, viewLayout.layout]);
   const [pinned, ...scrollable] = columns;
   const pinnedWidth = GUTTER_WIDTH + pinned.width;
@@ -168,8 +181,20 @@ export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view
         fields={fields}
         hiddenFieldIds={viewLayout.layout.hiddenFieldIds}
         layoutError={viewLayout.error}
+        panelOpen={panelOpen}
+        panelStatus={panelStatus}
+        onTogglePanel={() => setPanelOpen((open) => !open)}
         onAddRow={addRow}
         onToggleHidden={(fieldId, hidden) => viewLayout.update((layout) => setFieldHidden(layout, fieldId, hidden))}
+      />
+      <ViewPanel
+        open={panelOpen}
+        fields={fields}
+        saved={savedView.view}
+        save={canEdit ? savedView.save : null}
+        onApply={applyQuery}
+        onStatusChange={setPanelStatus}
+        labelOf={store.getLabel}
       />
       <div
         ref={scrollRef}

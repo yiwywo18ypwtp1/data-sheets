@@ -12,6 +12,10 @@ type GridToolbarProps = {
   fields: Field[];
   hiddenFieldIds: string[];
   layoutError: string | null;
+  panelOpen: boolean;
+  /** Unsaved changes in the view panel, and how many conditions and sorts are in effect. */
+  panelStatus: { dirty: boolean; active: number };
+  onTogglePanel: () => void;
   onAddRow: () => void;
   onToggleHidden: (fieldId: string, hidden: boolean) => void;
 };
@@ -19,7 +23,7 @@ type GridToolbarProps = {
 const buttonClass = "rounded px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:text-zinc-200 dark:hover:bg-zinc-800";
 
 /** Actions above the grid: add a record, show/hide fields, delete the selected records. */
-export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFieldIds, layoutError, onAddRow, onToggleHidden }: GridToolbarProps) {
+export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFieldIds, layoutError, panelOpen, panelStatus, onTogglePanel, onAddRow, onToggleHidden }: GridToolbarProps) {
   const selectedRows = useGridStore(store, (state) => state.getSelectedRowsKey());
   const pasteExtraRows = useGridStore(store, (state) => state.pastePrompt?.extraRows ?? 0);
   const [confirming, setConfirming] = useState(false);
@@ -50,6 +54,10 @@ export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFiel
           + Add record
         </button>
       )}
+      <button type="button" className={`${buttonClass} ${panelOpen ? "bg-zinc-100 dark:bg-zinc-800" : ""}`} aria-expanded={panelOpen} onClick={onTogglePanel}>
+        Filter &amp; sort{panelStatus.active > 0 ? ` · ${panelStatus.active}` : ""}
+        {panelStatus.dirty && <span aria-label="unsaved changes" className="ml-1 inline-block size-1.5 rounded-full bg-amber-500 align-middle" />}
+      </button>
       <button ref={fieldsButton} type="button" className={buttonClass} aria-haspopup="true" aria-expanded={fieldsOpen} onClick={() => setFieldsOpen((open) => !open)}>
         Fields{hiddenFieldIds.length > 0 ? ` · ${hiddenFieldIds.length} hidden` : ""}
       </button>

@@ -145,6 +145,19 @@ export function emptyCondition(fieldId: string, operator: FilterOperator): Filte
   }
 }
 
+/**
+ * A condition with another operator. The value is kept when it has the same shape
+ * ("contains" → "is" keeps the text, "=" → ">" keeps the number) and reset otherwise,
+ * so no key from the old operator survives.
+ */
+export function changeOperator(condition: FilterCondition, operator: FilterOperator): FilterCondition {
+  const next = emptyCondition(condition.fieldId, operator);
+  if (!("value" in next) || !("value" in condition)) return next;
+  const shape = (value: unknown) => (Array.isArray(value) ? "array" : value === null ? "number" : typeof value);
+  const kept = { ...next, value: condition.value } as FilterCondition;
+  return shape(next.value) === shape(condition.value) && filterConditionSchema.safeParse(kept).success ? kept : next;
+}
+
 export function defaultConditionFor(field: Field): FilterCondition {
   return emptyCondition(field.id, OPERATORS_BY_KIND[filterKindOf(field)][0]);
 }
