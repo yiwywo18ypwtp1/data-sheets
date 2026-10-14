@@ -21,6 +21,7 @@ const buttonClass = "rounded px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-100 d
 /** Actions above the grid: add a record, show/hide fields, delete the selected records. */
 export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFieldIds, layoutError, onAddRow, onToggleHidden }: GridToolbarProps) {
   const selectedRows = useGridStore(store, (state) => state.getSelectedRowsKey());
+  const pasteExtraRows = useGridStore(store, (state) => state.pastePrompt?.extraRows ?? 0);
   const [confirming, setConfirming] = useState(false);
   const [fieldsOpen, setFieldsOpen] = useState(false);
   const fieldsButton = useRef<HTMLButtonElement>(null);
@@ -67,7 +68,20 @@ export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFiel
         </Popover>
       )}
 
-      {canEdit && count > 0 && (
+      {pasteExtraRows > 0 ? (
+        <div role="alertdialog" aria-label="Paste past the last row" className="ml-2 flex items-center gap-2 text-sm">
+          <span className="text-zinc-600 dark:text-zinc-300">The paste needs {pasteExtraRows.toLocaleString()} more {pasteExtraRows === 1 ? "row" : "rows"}.</span>
+          <button type="button" autoFocus className="rounded bg-blue-600 px-2 py-1 text-white hover:bg-blue-700" onClick={() => store.pastePrompt?.answer("add")}>
+            Add rows
+          </button>
+          <button type="button" className={buttonClass} onClick={() => store.pastePrompt?.answer("fit")}>
+            Paste what fits
+          </button>
+          <button type="button" className={buttonClass} onClick={() => store.pastePrompt?.answer("cancel")}>
+            Cancel
+          </button>
+        </div>
+      ) : canEdit && count > 0 && (
         <div className="ml-2 flex items-center gap-2 text-sm">
           {confirming ? (
             <>

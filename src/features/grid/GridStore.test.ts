@@ -353,3 +353,44 @@ describe("GridStore adding and deleting rows", () => {
     expect(fetchWindow).toHaveBeenCalled(); // windows reloaded
   });
 });
+
+describe("GridStore undo and ranges", () => {
+  it("undoes and redoes a whole action as one step", async () => {
+    const sent: RowOp[][] = [];
+    const store = createStore({
+      query: baseQuery,
+      fetchWindow: async (_q, o, l) => windowOf(o, l),
+      sendBatch: async (ops) => {
+        sent.push(ops);
+        return ops.map((op) => ({ ok: true, rowId: op.rowId, row: null }));
+      },
+      initialWindow: windowOf(0, BLOCK_SIZE),
+    });
+    const changes = [1, 2, 3].map((i) => ({ rowId: `row_a_${i}`, fieldId: "n", before: i, after: i * 10, row: i, col: 1 }));
+    store.applyChanges("paste of 3 cells", changes);
+    expect(store.getRowAt(2)?.values.n).toBe(20);
+
+    const undone = store.undo();
+    expect(undone?.changes).toHaveLength(3);
+    expect(store.getRowAt(2)?.values.n).toBe(2);
+    expect(store.announcement).toBe("Undid paste of 3 cells");
+
+    store.redo();
+    expect(store.getRowAt(3)?.values.n).toBe(30);
+    await vi.runAllTimersAsync();
+    expect(sent.length).toBeGreaterThan(0);
+  });
+
+  it("returns rows of a range, fetching the ones that aren't loaded", async () => {
+    const fetchWindow = vi.fn(async (_q: RowQuery, o: number, l: number) => windowOf(o, l));
+    const store = createStore({ query: baseQuery, fetchWindow, initialWindow: windowOf(0, BLOCK_SIZE) });
+    const rows = await store.getRowsInRange(90, 1200);
+    expect(rows.map((r) => r.id)).toEqual(Array.from({ length: 1111 }, (_, i) => `row_a_${90 + i}`));
+    expect(fetchWindow.mock.calls.map((call) => [call[1], call[2]])).toEqual([
+      [100, 500],
+      [600, 500],
+      [1100, 101],
+    ]);
+    expect(store.loadedBlockCount).toBe(1); // fetched rows aren't kept
+  });
+});

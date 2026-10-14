@@ -15,6 +15,7 @@ import { GridToolbar } from "./GridToolbar";
 import { FOOTER_HEIGHT, gridColumns, GUTTER_WIDTH, HEADER_HEIGHT, moveField, ROW_HEIGHTS, setColumnWidth, setFieldHidden } from "./layout";
 import type { CellPosition } from "./selection";
 import { useCellEditing } from "./useCellEditing";
+import { useClipboard } from "./useClipboard";
 import { GridEditingContext } from "./GridEditingContext";
 import { useGridSelection } from "./useGridSelection";
 import { useGridStore } from "./useGridStore";
@@ -140,6 +141,7 @@ export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view
     scrollToCell,
     focusGrid: () => scrollRef.current?.focus({ preventScroll: true }),
   });
+  const clipboard = useClipboard({ store, columns, canEdit, locale, timeZone, formatters });
   const announcement = useGridStore(store, (state) => state.announcement);
   const announcementId = useGridStore(store, (state) => state.announcementId);
   const idPrefix = useId();
@@ -185,6 +187,8 @@ export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view
         onPointerDown={selection.onPointerDown}
         onPointerMove={selection.onPointerMove}
         onDoubleClick={editing.onDoubleClick}
+        onCopy={clipboard.onCopy}
+        onPaste={clipboard.onPaste}
       >
         {/* Results of edits, clears and failed saves, for screen readers. Keyed so a repeated message is read again. */}
         <div key={announcementId} role="status" aria-live="polite" className="sr-only">

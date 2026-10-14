@@ -5,6 +5,7 @@ import { isConditionComplete, type FilterGroup } from "@/lib/domain/filter";
 import { newId } from "@/lib/domain/ids";
 import { MAX_BATCH_OPS, type Row, type RowOp, type RowOpResult } from "@/lib/domain/row";
 import type { RowQuery } from "./api";
+import { History, type HistoryChange, type HistoryEntry } from "./history";
 import { buildFormulaContext, displayRow, type DisplayRow, type FormulaContext, type PendingEdit } from "./optimistic";
 import { rangeOf, rowSelectionKey, type Selection } from "./selection";
 
@@ -39,6 +40,9 @@ type Block =
 
 export type RowStatus = "ready" | "loading" | "error";
 export type CellChange = { rowId: string; fieldId: string; value: CellValue };
+export type CellError = { rowId: string; fieldId: string; message: string };
+/** What to do with a paste that runs past the last row. */
+export type PasteChoice = "add" | "fit" | "cancel";
 /** `initialText` is what the editor opens with: the typed character, or null to start from the cell's value. */
 export type EditingState = { row: number; col: number; initialText: string | null };
 
@@ -74,6 +78,7 @@ export class GridStore {
   private inFlight = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private nextOpId = 1;
+  private readonly history = new History();
 
   query: RowQuery;
   /** Rows in the server's filtered result. */
@@ -92,6 +97,8 @@ export class GridStore {
   /** Latest message for the screen-reader live region; `announcementId` changes even if the text repeats. */
   announcement = "";
   announcementId = 0;
+  /** A paste waiting for the user to decide about extra rows (shown by the toolbar). */
+  pastePrompt: { extraRows: number; answer: (choice: PasteChoice) => void } | null = null;
 
   constructor({ query, fields, fetchWindow, sendBatch, initialWindow }: GridStoreOptions) {
     this.query = query;
@@ -223,6 +230,81 @@ export class GridStore {
     this.notify();
   }
 
+  /** Applies a user action and records it, so one Cmd+Z undoes all of it (a whole paste included). */
+  applyChanges(label: string, changes: HistoryChange[]): void {
+    if (changes.length === 0) return;
+    this.writeCells(changes.map(({ rowId, fieldId, after }) => ({ rowId, fieldId, value: after })));
+    this.history.push({ label, changes });
+  }
+
+  /** Writes the `before` values of the last action back. Returns it, so the grid can show where it happened. */
+  undo(): HistoryEntry | null {
+    const entry = this.history.undo();
+    if (!entry) return null;
+    this.writeCells(entry.changes.map(({ rowId, fieldId, before }) => ({ rowId, fieldId, value: before })));
+    this.announce(`Undid ${entry.label}`);
+    return entry;
+  }
+
+  redo(): HistoryEntry | null {
+    const entry = this.history.redo();
+    if (!entry) return null;
+    this.writeCells(entry.changes.map(({ rowId, fieldId, after }) => ({ rowId, fieldId, value: after })));
+    this.announce(`Redid ${entry.label}`);
+    return entry;
+  }
+
+  /** Marks cells whose pasted text couldn't be converted (they keep their value and get a red frame). */
+  setCellErrors(errors: CellError[]): void {
+    for (const { rowId, fieldId, message } of errors) {
+      this.saveErrors.set(rowId, { ...this.saveErrors.get(rowId), [fieldId]: message });
+      this.refreshRow(rowId);
+    }
+    this.notify();
+  }
+
+  /** Asks (through the toolbar) whether to add rows for a paste that runs past the end. */
+  askAboutExtraRows(extraRows: number): Promise<PasteChoice> {
+    return new Promise((resolve) => {
+      this.pastePrompt = {
+        extraRows,
+        answer: (choice) => {
+          this.pastePrompt = null;
+          this.notify();
+          resolve(choice);
+        },
+      };
+      this.notify();
+    });
+  }
+
+  /**
+   * Rows `first..last` of the current result, in order: the loaded ones from memory, the
+   * rest fetched in pages of 500 without keeping them (a paste over 10 000 rows must not
+   * blow the memory budget). Throws if the view's query changes meanwhile.
+   */
+  async getRowsInRange(first: number, last: number): Promise<DisplayRow[]> {
+    const generation = this.generation;
+    const rows: DisplayRow[] = [];
+    let index = first;
+    while (index <= last) {
+      const loaded = this.getRowAt(index);
+      if (loaded) {
+        rows.push(loaded);
+        index++;
+        continue;
+      }
+      const limit = Math.min(500, last - index + 1);
+      const response = await this.fetchWindow(this.query, index, limit, new AbortController().signal);
+      if (generation !== this.generation) throw new Error("The view changed while the rows were loading");
+      for (const [id, label] of Object.entries(response.linkedLabels)) this.labels.set(id, label);
+      if (response.rows.length === 0) break;
+      for (const row of response.rows) rows.push(this.display.get(row.id) ?? row);
+      index += response.rows.length;
+    }
+    return rows;
+  }
+
   /** Adds an empty record at the bottom, optimistically, and returns its index. */
   addRow(values: Record<string, CellValue> = {}): number {
     const now = new Date().toISOString();
@@ -301,7 +383,8 @@ export class GridStore {
     if (this.pending.get(edit.rowId)!.length === 0) this.pending.delete(edit.rowId);
 
     if (result?.ok) {
-      if (result.row) this.rows.set(result.row.id, result.row);
+      // Only rows the grid holds are updated: a paste into 10 000 unloaded rows must not keep them all.
+      if (result.row && this.rows.has(result.row.id)) this.rows.set(result.row.id, result.row);
       if (edit.op === "delete") this.forgetRow(edit.rowId);
     } else if (edit.op === "create") {
       // The record doesn't exist on the server, so it disappears (with any edits made to it meanwhile).
