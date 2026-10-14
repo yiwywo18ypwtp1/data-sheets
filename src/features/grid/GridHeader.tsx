@@ -33,6 +33,9 @@ type GridHeaderProps = {
   onResize: (fieldId: string, width: number) => void;
   onMove: (fieldId: string, direction: -1 | 1) => void;
   onHide: (fieldId: string) => void;
+  canChangeSchema: boolean;
+  onEditField: (field: Field) => void;
+  onDeleteField: (field: Field) => void;
 };
 
 const RESIZE_STEP = 16;
@@ -76,7 +79,7 @@ function ResizeHandle({ column, onResize }: { column: GridColumn; onResize: (wid
 }
 
 /** Column headers. Clicking one selects the whole column (handled by the grid via `data-header-col`). */
-export function GridHeader({ store, primaryFieldId, pinned, scrollable, virtualColumns, width, onResize, onMove, onHide }: GridHeaderProps) {
+export function GridHeader({ store, primaryFieldId, pinned, scrollable, virtualColumns, width, onResize, onMove, onHide, canChangeSchema, onEditField, onDeleteField }: GridHeaderProps) {
   const selectedKey = useGridStore(store, (state) => state.getSelectedColumnsKey());
   const [left, right] = selectedKey ? selectedKey.split(":").map(Number) : [-1, -1];
   const background = (col: number) => (col >= left && col <= right ? "bg-blue-50 dark:bg-blue-950" : "bg-zinc-50 dark:bg-zinc-900");
@@ -97,8 +100,11 @@ export function GridHeader({ store, primaryFieldId, pinned, scrollable, virtualC
       <ColumnMenu
         field={column.field}
         isPrimary={column.field.id === primaryFieldId}
+        canChangeSchema={canChangeSchema}
         onMove={(direction) => onMove(column.field.id, direction)}
         onHide={() => onHide(column.field.id)}
+        onEdit={() => onEditField(column.field)}
+        onDelete={() => onDeleteField(column.field)}
       />
       <ResizeHandle column={column} onResize={(next) => onResize(column.field.id, next)} />
     </div>

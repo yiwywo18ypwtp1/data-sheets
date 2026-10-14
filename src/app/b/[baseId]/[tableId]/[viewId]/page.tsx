@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
+import type { Field } from "@/lib/domain/field";
 import { hasRole } from "@/lib/domain/user";
 import { Grid } from "@/features/grid/Grid";
 import { BLOCK_SIZE } from "@/features/grid/GridStore";
@@ -8,10 +9,17 @@ import { ViewTabs } from "@/features/table-shell/ViewTabs";
 import { getCurrentUser } from "@/server/auth";
 import { now } from "@/server/clock";
 import { linkedRecordLabels, queryRows } from "@/server/rows";
-import { getBase, getTable, getView } from "@/server/tables";
+import { getBase, getBaseSchema, getTable, getView } from "@/server/tables";
 
 // Matches the grid store's block size, so the first block is complete.
 const INITIAL_WINDOW = BLOCK_SIZE;
+
+/** A short key that changes whenever any field changes (FNV-1a of the schema JSON). */
+function schemaKey(fields: Field[]): string {
+  let hash = 0x811c9dc5;
+  for (const char of JSON.stringify(fields)) hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193);
+  return (hash >>> 0).toString(36);
+}
 
 /**
  * Server Component: loads the shell data (base, table schema, view, user) and the
@@ -42,6 +50,8 @@ export default async function ViewPage({ params }: PageProps<"/b/[baseId]/[table
     limit: INITIAL_WINDOW,
     context: { now: now(), timeZone: "UTC" },
   });
+  const fieldsByTable = new Map(getBaseSchema(base.id).map((schema) => [schema.tableId, schema.fields]));
+  const baseTables = base.tables.map((summary) => ({ id: summary.id, name: summary.name, fields: fieldsByTable.get(summary.id) ?? [] }));
   const linkedLabels = linkedRecordLabels(table.fields, initialWindow.rows, (id) => getTable(id)?.primaryFieldId ?? null);
 
   return (
@@ -58,11 +68,14 @@ export default async function ViewPage({ params }: PageProps<"/b/[baseId]/[table
           </span>
         )}
       </div>
-      {/* Keyed by view: switching views starts a fresh grid store instead of patching the old one. */}
+      {/* Keyed by view and schema: switching views, or a field change, starts a fresh grid store
+          (new columns, recomputed values) instead of patching the old one. */}
       <Grid
-        key={view.id}
+        key={`${view.id}:${schemaKey(table.fields)}`}
         tableId={table.id}
         canEdit={hasRole(user.role, "editor")}
+        canChangeSchema={hasRole(user.role, "creator")}
+        tables={baseTables}
         tableName={table.name}
         fields={table.fields}
         primaryFieldId={table.primaryFieldId}

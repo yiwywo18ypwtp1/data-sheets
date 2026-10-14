@@ -1,11 +1,15 @@
 "use client";
 
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { RowWindowResponse } from "@/lib/domain/api";
 import type { Field } from "@/lib/domain/field";
+import type { Row } from "@/lib/domain/row";
 import type { View, ViewQuery } from "@/lib/domain/view";
 import { createCellFormatter } from "@/lib/format";
+import { DeleteFieldDialog } from "@/features/fields/DeleteFieldDialog";
+import { FieldDialog, type BaseTable } from "@/features/fields/FieldDialog";
 import { ViewPanel } from "@/features/view-panel/ViewPanel";
 import { fetchRowWindow, sendRowBatch } from "./api";
 import { GridFooter } from "./GridFooter";
@@ -28,6 +32,10 @@ type GridProps = {
   tableId: string;
   /** Whether the current user may edit records. Only shapes the UI: the server checks again. */
   canEdit: boolean;
+  /** Creators can add, edit and delete fields. */
+  canChangeSchema: boolean;
+  /** Every table of the base with its fields: link targets and lookups in the field dialog. */
+  tables: BaseTable[];
   tableName: string;
   fields: Field[];
   primaryFieldId: string;
@@ -50,7 +58,7 @@ const INITIAL_RECT = { width: 1280, height: 800 };
  * through `aria-activedescendant`, which works even though cells come and go as
  * they scroll in and out of view.
  */
-export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view, viewVersion, initialWindow }: GridProps) {
+export function Grid({ tableId, canEdit, canChangeSchema, tables, tableName, fields, primaryFieldId, view, viewVersion, initialWindow }: GridProps) {
   const [store] = useState(
     () =>
       new GridStore({
@@ -73,6 +81,13 @@ export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view
   const savedView = useSavedView(view, viewVersion);
   const viewLayout = useViewLayout(view, canEdit ? savedView.save : null);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [fieldDialog, setFieldDialog] = useState<{ mode: "edit" | "delete"; field: Field } | { mode: "create" } | null>(null);
+  const router = useRouter();
+  // The page re-renders with the new schema; the grid is keyed by it and starts over with fresh rows.
+  const schemaChanged = () => {
+    setFieldDialog(null);
+    router.refresh();
+  };
   const [panelStatus, setPanelStatus] = useState({ dirty: false, active: view.sorts.length });
   const applyQuery = useCallback(
     ({ filter, sorts }: ViewQuery) => {
@@ -163,6 +178,16 @@ export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view
   const width = columnVirtualizer.getTotalSize();
   const height = rowVirtualizer.getTotalSize();
 
+  /** The first loaded rows, for the formula preview. */
+  function previewRows(): Row[] {
+    const rows: Row[] = [];
+    for (let index = 0; index < 5; index++) {
+      const row = store.getRowAt(index);
+      if (row) rows.push(row);
+    }
+    return rows;
+  }
+
   function addRow() {
     const index = store.addRow();
     const cell = { row: index, col: 0 };
@@ -184,6 +209,7 @@ export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view
         panelOpen={panelOpen}
         panelStatus={panelStatus}
         onTogglePanel={() => setPanelOpen((open) => !open)}
+        onAddField={canChangeSchema ? () => setFieldDialog({ mode: "create" }) : null}
         onAddRow={addRow}
         onToggleHidden={(fieldId, hidden) => viewLayout.update((layout) => setFieldHidden(layout, fieldId, hidden))}
       />
@@ -232,6 +258,9 @@ export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view
               onResize={(fieldId, next) => viewLayout.update((layout) => setColumnWidth(layout, fieldId, next))}
               onMove={(fieldId, direction) => viewLayout.update((layout) => moveField(fields, primaryFieldId, layout, fieldId, direction))}
               onHide={(fieldId) => viewLayout.update((layout) => setFieldHidden(layout, fieldId, true))}
+              canChangeSchema={canChangeSchema}
+              onEditField={(field) => setFieldDialog({ mode: "edit", field })}
+              onDeleteField={(field) => setFieldDialog({ mode: "delete", field })}
             />
             {/* Takes the rows' space in normal flow, so the sticky footer sits after them. */}
             <div style={{ height: Math.max(0, height - HEADER_HEIGHT - FOOTER_HEIGHT) }} />
@@ -263,6 +292,26 @@ export function Grid({ tableId, canEdit, tableName, fields, primaryFieldId, view
           </div>
         </GridEditingContext.Provider>
       </div>
+      {fieldDialog?.mode === "delete" ? (
+        <DeleteFieldDialog
+          tableId={tableId}
+          field={fieldDialog.field}
+          tableNames={Object.fromEntries(tables.map((table) => [table.id, table.name]))}
+          onClose={() => setFieldDialog(null)}
+          onDeleted={schemaChanged}
+        />
+      ) : fieldDialog ? (
+        <FieldDialog
+          tableId={tableId}
+          tables={tables}
+          field={fieldDialog.mode === "edit" ? fieldDialog.field : null}
+          previewRows={previewRows()}
+          locale={locale}
+          timeZone={timeZone}
+          onClose={() => setFieldDialog(null)}
+          onSaved={schemaChanged}
+        />
+      ) : null}
     </div>
   );
 }

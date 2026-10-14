@@ -16,6 +16,8 @@ type GridToolbarProps = {
   /** Unsaved changes in the view panel, and how many conditions and sorts are in effect. */
   panelStatus: { dirty: boolean; active: number };
   onTogglePanel: () => void;
+  /** Set for creators: opens the new-field dialog. */
+  onAddField: (() => void) | null;
   onAddRow: () => void;
   onToggleHidden: (fieldId: string, hidden: boolean) => void;
 };
@@ -23,7 +25,7 @@ type GridToolbarProps = {
 const buttonClass = "rounded px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 dark:text-zinc-200 dark:hover:bg-zinc-800";
 
 /** Actions above the grid: add a record, show/hide fields, delete the selected records. */
-export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFieldIds, layoutError, panelOpen, panelStatus, onTogglePanel, onAddRow, onToggleHidden }: GridToolbarProps) {
+export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFieldIds, layoutError, panelOpen, panelStatus, onTogglePanel, onAddField, onAddRow, onToggleHidden }: GridToolbarProps) {
   const selectedRows = useGridStore(store, (state) => state.getSelectedRowsKey());
   const pasteExtraRows = useGridStore(store, (state) => state.pastePrompt?.extraRows ?? 0);
   const [confirming, setConfirming] = useState(false);
@@ -52,6 +54,11 @@ export function GridToolbar({ store, canEdit, primaryFieldId, fields, hiddenFiel
       {canEdit && (
         <button type="button" className={buttonClass} onClick={onAddRow}>
           + Add record
+        </button>
+      )}
+      {onAddField && (
+        <button type="button" className={buttonClass} onClick={onAddField}>
+          + Add field
         </button>
       )}
       <button type="button" className={`${buttonClass} ${panelOpen ? "bg-zinc-100 dark:bg-zinc-800" : ""}`} aria-expanded={panelOpen} onClick={onTogglePanel}>

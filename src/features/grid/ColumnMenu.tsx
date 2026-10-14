@@ -7,12 +7,16 @@ type ColumnMenuProps = {
   field: Field;
   /** The primary field is pinned first and can't be moved or hidden. */
   isPrimary: boolean;
+  /** Creators can edit and delete fields from here. */
+  canChangeSchema: boolean;
   onMove: (direction: -1 | 1) => void;
   onHide: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
 };
 
-/** The "⋯" menu of a column header. */
-export function ColumnMenu({ field, isPrimary, onMove, onHide }: ColumnMenuProps) {
+/** The "⋯" menu of a column header. The primary field can't be moved, hidden or deleted, only edited. */
+export function ColumnMenu({ field, isPrimary, canChangeSchema, onMove, onHide, onEdit, onDelete }: ColumnMenuProps) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -32,7 +36,7 @@ export function ColumnMenu({ field, isPrimary, onMove, onHide }: ColumnMenuProps
     </button>
   );
 
-  if (isPrimary) return null;
+  if (isPrimary && !canChangeSchema) return null;
   return (
     <>
       <button
@@ -64,9 +68,11 @@ export function ColumnMenu({ field, isPrimary, onMove, onHide }: ColumnMenuProps
               if (event.key === "Escape") setOpen(false);
             }}
           >
-            {item("Move left", () => onMove(-1))}
-            {item("Move right", () => onMove(1))}
-            {item("Hide field", onHide)}
+            {canChangeSchema && item("Edit field…", onEdit)}
+            {!isPrimary && item("Move left", () => onMove(-1))}
+            {!isPrimary && item("Move right", () => onMove(1))}
+            {!isPrimary && item("Hide field", onHide)}
+            {canChangeSchema && !isPrimary && item("Delete field…", onDelete)}
           </div>
         </Popover>
       )}

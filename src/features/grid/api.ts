@@ -22,7 +22,8 @@ export class ApiRequestError extends Error {
   }
 }
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
+/** Fetches JSON; a non-2xx answer becomes an `ApiRequestError` from the API's error body. A 204 resolves to null. */
+export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as ErrorBody | null;
@@ -34,6 +35,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
       body?.error.details,
     );
   }
+  if (response.status === 204) return null as T;
   return (await response.json()) as T;
 }
 
