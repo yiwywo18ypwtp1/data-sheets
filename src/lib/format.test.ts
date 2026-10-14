@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Field } from "./domain/field";
-import { createCellFormatter, type FormatContext } from "./format";
+import { createCoercer } from "./coerce/coerce";
+import { createCellFormatter, toEditText, type FormatContext } from "./format";
 
 const uk: FormatContext = { locale: "uk-UA", timeZone: "Europe/Kyiv", labelOf: (id) => ({ row_1: "Ada" })[id] };
 const us: FormatContext = { locale: "en-US", timeZone: "America/Los_Angeles", labelOf: () => undefined };
@@ -39,5 +40,33 @@ describe("createCellFormatter", () => {
   it("renders empty values as empty text", () => {
     expect(format({ id: "f", name: "T", type: "text" }, undefined)).toBe("");
     expect(format({ id: "f", name: "N", type: "number", precision: 0 }, null)).toBe("");
+  });
+});
+
+describe("toEditText", () => {
+  const roundTrip = (field: Field, value: unknown, context: FormatContext) => {
+    const text = toEditText(field, value as never, context);
+    const parsed = createCoercer(field, context)(text);
+    return { text, value: parsed.ok ? parsed.value : parsed.error };
+  };
+
+  it.each([
+    ["uk-UA", uk],
+    ["en-US", us],
+  ])("round-trips numbers, money and dates through the editor in %s", (_name, context) => {
+    const number: Field = { id: "f", name: "N", type: "number", precision: 2 };
+    const money: Field = { id: "f", name: "C", type: "currency", currency: "USD" };
+    const date: Field = { id: "f", name: "D", type: "date", includeTime: false };
+    const berlin: Field = { id: "f", name: "D", type: "date", includeTime: true, timeZone: "Europe/Berlin" };
+    expect(roundTrip(number, 1234.5, context).value).toBe(1234.5);
+    expect(roundTrip(money, 99.99, context).value).toBe(99.99);
+    expect(roundTrip(date, "2026-03-01", context).value).toBe("2026-03-01");
+    expect(roundTrip(berlin, "2026-10-25T00:30:00.000Z", context).value).toBe("2026-10-25T00:30:00.000Z");
+  });
+
+  it("uses numeric, locale-ordered dates and ungrouped numbers", () => {
+    expect(toEditText({ id: "f", name: "D", type: "date", includeTime: false }, "2026-03-01", uk)).toBe("01.03.2026");
+    expect(toEditText({ id: "f", name: "D", type: "date", includeTime: false }, "2026-03-01", us)).toBe("03/01/2026");
+    expect(toEditText({ id: "f", name: "N", type: "number", precision: 2 }, 1234.5, uk)).toBe("1234,5");
   });
 });

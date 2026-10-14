@@ -62,6 +62,7 @@ export default async function ViewPage({ params }: PageProps<"/b/[baseId]/[table
       <Grid
         key={view.id}
         tableId={table.id}
+        canEdit={hasRole(user.role, "editor")}
         tableName={table.name}
         fields={table.fields}
         primaryFieldId={table.primaryFieldId}

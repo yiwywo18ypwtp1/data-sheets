@@ -1,5 +1,6 @@
 import type { ErrorBody, RowWindowResponse } from "@/lib/domain/api";
 import type { FilterGroup } from "@/lib/domain/filter";
+import type { RowOp, RowOpResult } from "@/lib/domain/row";
 import { encodeFilterParam, encodeSortParam } from "@/lib/domain/query";
 import type { Sort } from "@/lib/domain/view";
 
@@ -45,4 +46,21 @@ export function fetchRowWindow(tableId: string, query: RowQuery, offset: number,
     tz: query.timeZone,
   });
   return request<RowWindowResponse>(`/api/tables/${tableId}/rows?${params}`, { signal });
+}
+
+export async function sendRowBatch(tableId: string, ops: RowOp[]): Promise<RowOpResult[]> {
+  const { results } = await request<{ results: RowOpResult[] }>(`/api/tables/${tableId}/rows/batch`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ops }),
+  });
+  return results;
+}
+
+export type RecordOption = { id: string; label: string };
+
+export async function searchRecords(tableId: string, q: string, signal: AbortSignal): Promise<RecordOption[]> {
+  const params = new URLSearchParams({ q, limit: "20" });
+  const { records } = await request<{ records: RecordOption[] }>(`/api/tables/${tableId}/records/search?${params}`, { signal });
+  return records;
 }

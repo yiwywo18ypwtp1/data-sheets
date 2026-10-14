@@ -1,12 +1,16 @@
 import type { Aggregates, RowWindowResponse } from "@/lib/domain/api";
+import type { CellValue } from "@/lib/domain/cell";
+import type { Field } from "@/lib/domain/field";
 import { isConditionComplete, type FilterGroup } from "@/lib/domain/filter";
-import type { Row } from "@/lib/domain/row";
+import { MAX_BATCH_OPS, type Row, type RowOp, type RowOpResult } from "@/lib/domain/row";
 import type { RowQuery } from "./api";
+import { buildFormulaContext, displayRow, type DisplayRow, type FormulaContext, type PendingEdit } from "./optimistic";
 import { rangeOf, rowSelectionKey, type Selection } from "./selection";
 
 /**
  * Client state of one open grid: which windows of rows are loaded, the rows
- * themselves, the filtered total and aggregates.
+ * themselves, the filtered total and aggregates, the selection, the cell being
+ * edited, and edits waiting for the server.
  *
  * Why a plain class read through `useSyncExternalStore` (instead of useState/context
  * or Zustand): each row component subscribes to just its own row, so loading a
@@ -25,6 +29,7 @@ export const MAX_BLOCKS = 12;
 export const FETCH_DELAY_MS = 50;
 
 export type FetchWindow = (query: RowQuery, offset: number, limit: number, signal: AbortSignal) => Promise<RowWindowResponse>;
+export type SendBatch = (ops: RowOp[]) => Promise<RowOpResult[]>;
 
 type Block =
   | { status: "loading"; controller: AbortController }
@@ -32,10 +37,16 @@ type Block =
   | { status: "error"; message: string };
 
 export type RowStatus = "ready" | "loading" | "error";
+export type CellChange = { rowId: string; fieldId: string; value: CellValue };
+/** `initialText` is what the editor opens with: the typed character, or null to start from the cell's value. */
+export type EditingState = { row: number; col: number; initialText: string | null };
 
 export type GridStoreOptions = {
   query: RowQuery;
+  /** All fields of the table: needed to recompute formulas optimistically. */
+  fields: Field[];
   fetchWindow: FetchWindow;
+  sendBatch: SendBatch;
   /** The first window, rendered on the server, so the grid starts with data. */
   initialWindow?: RowWindowResponse;
 };
@@ -43,7 +54,10 @@ export type GridStoreOptions = {
 export class GridStore {
   private readonly listeners = new Set<() => void>();
   private readonly fetchWindow: FetchWindow;
+  private readonly sendBatch: SendBatch;
+  private readonly formulas: FormulaContext;
   private blocks = new Map<number, Block>();
+  /** Rows exactly as the server last confirmed them. */
   private rows = new Map<string, Row>();
   private labels = new Map<string, string>();
   /** Bumped whenever the query changes: responses for an older generation are dropped. */
@@ -51,15 +65,30 @@ export class GridStore {
   private wanted: { first: number; last: number } | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
+  // Writes: unconfirmed edits per row, cell errors from failed saves, and the rows as displayed.
+  private pending = new Map<string, PendingEdit[]>();
+  private saveErrors = new Map<string, Record<string, string>>();
+  private display = new Map<string, DisplayRow>();
+  private queue: PendingEdit[] = [];
+  private inFlight = false;
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private nextOpId = 1;
+
   query: RowQuery;
   total = 0;
   aggregates: Aggregates = {};
   /** Lives here (not in React state) so only rows whose part of it changes re-render. */
   selection: Selection | null = null;
+  editing: EditingState | null = null;
+  /** Latest message for the screen-reader live region; `announcementId` changes even if the text repeats. */
+  announcement = "";
+  announcementId = 0;
 
-  constructor({ query, fetchWindow, initialWindow }: GridStoreOptions) {
+  constructor({ query, fields, fetchWindow, sendBatch, initialWindow }: GridStoreOptions) {
     this.query = query;
     this.fetchWindow = fetchWindow;
+    this.sendBatch = sendBatch;
+    this.formulas = buildFormulaContext(fields);
     if (initialWindow) this.applyWindow(0, initialWindow);
   }
 
@@ -73,11 +102,13 @@ export class GridStore {
     for (const listener of this.listeners) listener();
   }
 
-  getRowAt(index: number): Row | undefined {
+  // ---- reading rows ------------------------------------------------------------
+
+  getRowAt(index: number): DisplayRow | undefined {
     const block = this.blocks.get(Math.floor(index / BLOCK_SIZE));
     if (block?.status !== "ready") return undefined;
     const id = block.rowIds[index % BLOCK_SIZE];
-    return id === undefined ? undefined : this.rows.get(id);
+    return id === undefined ? undefined : (this.display.get(id) ?? this.rows.get(id));
   }
 
   getRowStatus(index: number): RowStatus {
@@ -89,9 +120,16 @@ export class GridStore {
   /** An arrow function so it can be handed to formatters without binding. */
   getLabel = (rowId: string): string | undefined => this.labels.get(rowId);
 
+  /** Labels of records picked in the link editor, so the cell shows them before the server answers. */
+  addLabels(labels: Record<string, string>): void {
+    for (const [id, label] of Object.entries(labels)) this.labels.set(id, label);
+  }
+
   get loadedBlockCount(): number {
     return this.blocks.size;
   }
+
+  // ---- selection and editing ---------------------------------------------------
 
   setSelection(selection: Selection | null): void {
     this.selection = selection;
@@ -108,6 +146,119 @@ export class GridStore {
     const { left, right } = rangeOf(this.selection);
     return `${left}:${right}`;
   }
+
+  startEditing(editing: EditingState): void {
+    this.editing = editing;
+    this.notify();
+  }
+
+  stopEditing(): void {
+    if (!this.editing) return;
+    this.editing = null;
+    this.notify();
+  }
+
+  /** The column being edited in this row, or -1: a primitive, so only that row re-renders. */
+  getEditingCol(row: number): number {
+    return this.editing?.row === row ? this.editing.col : -1;
+  }
+
+  announce(message: string): void {
+    this.announcement = message;
+    this.announcementId++;
+    this.notify();
+  }
+
+  // ---- writing -----------------------------------------------------------------
+
+  /**
+   * Applies changes immediately (optimistically) and queues them for the server.
+   * Changes to the same row become one `update` op; everything written in the same
+   * tick (a whole paste) goes out in one batch.
+   */
+  writeCells(changes: CellChange[]): void {
+    const byRow = new Map<string, Record<string, CellValue>>();
+    for (const { rowId, fieldId, value } of changes) {
+      if (!byRow.has(rowId)) byRow.set(rowId, {});
+      byRow.get(rowId)![fieldId] = value;
+    }
+    for (const [rowId, values] of byRow) {
+      const edit: PendingEdit = { opId: this.nextOpId++, rowId, values };
+      this.pending.set(rowId, [...(this.pending.get(rowId) ?? []), edit]);
+      this.queue.push(edit);
+      // A new attempt replaces the old error on those cells.
+      const errors = this.saveErrors.get(rowId);
+      if (errors) {
+        for (const fieldId of Object.keys(values)) delete errors[fieldId];
+        if (Object.keys(errors).length === 0) this.saveErrors.delete(rowId);
+      }
+      this.refreshRow(rowId);
+    }
+    this.notify();
+    this.flushTimer ??= setTimeout(() => {
+      this.flushTimer = null;
+      void this.flush();
+    }, 0);
+  }
+
+  /** Whether any edit is still waiting for the server. */
+  get hasPendingWrites(): boolean {
+    return this.queue.length > 0 || this.inFlight;
+  }
+
+  /**
+   * Sends queued edits, one batch at a time. Sending sequentially keeps the server's
+   * order equal to the user's order, so the last edit of a cell is the one that wins.
+   */
+  private async flush(): Promise<void> {
+    if (this.inFlight || this.queue.length === 0) return;
+    const batch = this.queue.splice(0, MAX_BATCH_OPS);
+    this.inFlight = true;
+
+    let results: RowOpResult[];
+    try {
+      results = await this.sendBatch(
+        batch.map((edit) => ({ op: "update", rowId: edit.rowId, values: edit.values, rev: this.rows.get(edit.rowId)?.rev ?? 0 })),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Network error";
+      results = batch.map((edit) => ({ ok: false, rowId: edit.rowId, error: { code: "NETWORK", message: `Not saved: ${message}` } }));
+    }
+    this.inFlight = false;
+
+    batch.forEach((edit, i) => this.settle(edit, results[i]));
+    const failed = results.filter((result) => !result.ok).length;
+    if (failed > 0) this.announce(`${failed} ${failed === 1 ? "change" : "changes"} couldn't be saved`);
+    this.notify();
+    if (this.queue.length > 0) void this.flush();
+  }
+
+  /** Confirms or rolls back one edit. A rollback only drops this edit: other pending edits stay applied. */
+  private settle(edit: PendingEdit, result: RowOpResult | undefined) {
+    this.pending.set(edit.rowId, (this.pending.get(edit.rowId) ?? []).filter((candidate) => candidate !== edit));
+    if (this.pending.get(edit.rowId)!.length === 0) this.pending.delete(edit.rowId);
+
+    if (result?.ok) {
+      if (result.row) this.rows.set(result.row.id, result.row);
+    } else {
+      const errors = { ...this.saveErrors.get(edit.rowId) };
+      for (const fieldId of Object.keys(edit.values)) {
+        errors[fieldId] = result?.error.fieldErrors?.[fieldId] ?? result?.error.message ?? "Not saved";
+      }
+      this.saveErrors.set(edit.rowId, errors);
+    }
+    this.refreshRow(edit.rowId);
+  }
+
+  private refreshRow(rowId: string) {
+    const base = this.rows.get(rowId);
+    const edits = this.pending.get(rowId) ?? [];
+    const errors = this.saveErrors.get(rowId);
+    if (!base || (edits.length === 0 && !errors)) this.display.delete(rowId);
+    else this.display.set(rowId, displayRow(base, edits, errors, this.formulas, new Date()));
+  }
+
+  // ---- loading windows ---------------------------------------------------------
 
   /** Called with the rows currently on screen (plus overscan). Loads missing blocks after a short delay. */
   ensureRange(first: number, last: number): void {
@@ -131,10 +282,12 @@ export class GridStore {
     this.abortAll();
     this.blocks.clear();
     this.rows.clear();
+    this.display.clear();
     this.labels.clear();
     this.query = query;
     // Row positions mean something else in the new result, so the old selection would point at other rows.
     this.selection = null;
+    this.editing = null;
     this.notify();
     this.loadWanted();
   }
@@ -191,7 +344,15 @@ export class GridStore {
       .sort(([a], [b]) => Math.abs(b - center) - Math.abs(a - center));
     for (const [index, block] of byDistance) {
       if (this.blocks.size <= MAX_BLOCKS) break;
-      if (block.status === "ready") for (const id of block.rowIds) this.rows.delete(id);
+      if (block.status === "ready") {
+        for (const id of block.rowIds) {
+          // Rows with unsaved edits stay: their server answer still has to land somewhere.
+          if (this.pending.has(id)) continue;
+          this.rows.delete(id);
+          this.display.delete(id);
+          this.saveErrors.delete(id);
+        }
+      }
       this.blocks.delete(index);
     }
   }
@@ -221,7 +382,11 @@ export class GridStore {
   }
 
   private applyWindow(blockIndex: number, response: RowWindowResponse) {
-    for (const row of response.rows) this.rows.set(row.id, row);
+    for (const row of response.rows) {
+      this.rows.set(row.id, row);
+      // Re-apply edits still waiting for the server on top of the fresh row.
+      if (this.pending.has(row.id) || this.saveErrors.has(row.id)) this.refreshRow(row.id);
+    }
     for (const [id, label] of Object.entries(response.linkedLabels)) this.labels.set(id, label);
     this.blocks.set(blockIndex, { status: "ready", rowIds: response.rows.map((row) => row.id) });
     this.total = response.total;

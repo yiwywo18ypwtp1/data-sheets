@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RowWindowResponse } from "@/lib/domain/api";
-import type { Row } from "@/lib/domain/row";
+import type { Field } from "@/lib/domain/field";
+import type { Row, RowOp, RowOpResult } from "@/lib/domain/row";
 import type { RowQuery } from "./api";
-import { BLOCK_SIZE, FETCH_DELAY_MS, GridStore, MAX_BLOCKS, usesRelativeDates, type FetchWindow } from "./GridStore";
+import { BLOCK_SIZE, FETCH_DELAY_MS, GridStore, MAX_BLOCKS, usesRelativeDates, type FetchWindow, type GridStoreOptions, type SendBatch } from "./GridStore";
 
 const TOTAL = 5000;
 const baseQuery: RowQuery = { filter: { conjunction: "and", conditions: [], groups: [] }, sorts: [], timeZone: "UTC" };
@@ -32,6 +33,10 @@ function controlledFetch() {
 
 const flush = () => vi.advanceTimersByTimeAsync(FETCH_DELAY_MS);
 
+function createStore(options: Partial<GridStoreOptions> & Pick<GridStoreOptions, "query" | "fetchWindow">) {
+  return new GridStore({ fields: [], sendBatch: async () => [], ...options });
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
 });
@@ -42,7 +47,7 @@ afterEach(() => {
 describe("GridStore", () => {
   it("starts with the server-rendered window and doesn't refetch it", async () => {
     const { fetchWindow, calls } = controlledFetch();
-    const store = new GridStore({ query: baseQuery, fetchWindow, initialWindow: windowOf(0, BLOCK_SIZE) });
+    const store = createStore({ query: baseQuery, fetchWindow, initialWindow: windowOf(0, BLOCK_SIZE) });
     expect(store.total).toBe(TOTAL);
     expect(store.getRowAt(42)?.id).toBe("row_a_42");
 
@@ -53,7 +58,7 @@ describe("GridStore", () => {
 
   it("loads the blocks covering the visible range, after a short delay", async () => {
     const { fetchWindow, calls } = controlledFetch();
-    const store = new GridStore({ query: baseQuery, fetchWindow });
+    const store = createStore({ query: baseQuery, fetchWindow });
     const listener = vi.fn();
     store.subscribe(listener);
 
@@ -73,7 +78,7 @@ describe("GridStore", () => {
 
   it("only requests the last range when scrolled quickly", async () => {
     const { fetchWindow, calls } = controlledFetch();
-    const store = new GridStore({ query: baseQuery, fetchWindow });
+    const store = createStore({ query: baseQuery, fetchWindow });
     store.ensureRange(1000, 1050);
     store.ensureRange(2000, 2050);
     store.ensureRange(3000, 3050);
@@ -83,7 +88,7 @@ describe("GridStore", () => {
 
   it("cancels requests for blocks scrolled far away", async () => {
     const { fetchWindow, calls } = controlledFetch();
-    const store = new GridStore({ query: baseQuery, fetchWindow });
+    const store = createStore({ query: baseQuery, fetchWindow });
     store.ensureRange(0, 50);
     await flush();
     store.ensureRange(4000, 4050);
@@ -96,7 +101,7 @@ describe("GridStore", () => {
 
   it("drops responses that belong to an older query, even if they arrive last", async () => {
     const { fetchWindow, calls } = controlledFetch();
-    const store = new GridStore({ query: baseQuery, fetchWindow });
+    const store = createStore({ query: baseQuery, fetchWindow });
     store.ensureRange(0, 50);
     await flush();
     const oldRequest = calls[0];
@@ -114,7 +119,7 @@ describe("GridStore", () => {
 
   it("keeps at most MAX_BLOCKS blocks, evicting the ones furthest away", async () => {
     const fetchWindow: FetchWindow = async (_query, offset, limit) => windowOf(offset, limit);
-    const store = new GridStore({ query: baseQuery, fetchWindow });
+    const store = createStore({ query: baseQuery, fetchWindow });
     for (let block = 0; block < MAX_BLOCKS + 8; block++) {
       store.ensureRange(block * BLOCK_SIZE, block * BLOCK_SIZE + 50);
       await vi.runAllTimersAsync();
@@ -126,7 +131,7 @@ describe("GridStore", () => {
 
   it("marks a failed block and retries it on demand", async () => {
     const { fetchWindow, calls } = controlledFetch();
-    const store = new GridStore({ query: baseQuery, fetchWindow });
+    const store = createStore({ query: baseQuery, fetchWindow });
     store.ensureRange(100, 150);
     await flush();
     calls[0].reject(new Error("Simulated failure"));
@@ -142,14 +147,14 @@ describe("GridStore", () => {
 
   it("refetches on a time zone change only when the filter depends on today", async () => {
     const { fetchWindow, calls } = controlledFetch();
-    const store = new GridStore({ query: baseQuery, fetchWindow, initialWindow: windowOf(0, BLOCK_SIZE) });
+    const store = createStore({ query: baseQuery, fetchWindow, initialWindow: windowOf(0, BLOCK_SIZE) });
     store.ensureRange(0, 50);
     store.setTimeZone("Europe/Kyiv");
     await flush();
     expect(calls).toHaveLength(0);
 
     const today = { ...baseQuery, filter: { conjunction: "and" as const, conditions: [{ fieldId: "d", operator: "isToday" as const }], groups: [] } };
-    const relative = new GridStore({ query: today, fetchWindow, initialWindow: windowOf(0, BLOCK_SIZE) });
+    const relative = createStore({ query: today, fetchWindow, initialWindow: windowOf(0, BLOCK_SIZE) });
     relative.ensureRange(0, 50);
     relative.setTimeZone("Europe/Kyiv");
     expect(calls).toHaveLength(1);
@@ -167,7 +172,7 @@ describe("usesRelativeDates", () => {
 
 describe("GridStore selection", () => {
   it("notifies subscribers and exposes per-row keys; a new query clears it", () => {
-    const store = new GridStore({ query: baseQuery, fetchWindow: async (_q, offset, limit) => windowOf(offset, limit) });
+    const store = createStore({ query: baseQuery, fetchWindow: async (_q, offset, limit) => windowOf(offset, limit) });
     const listener = vi.fn();
     store.subscribe(listener);
     store.setSelection({ anchor: { row: 3, col: 1 }, focus: { row: 5, col: 2 } });
@@ -178,5 +183,112 @@ describe("GridStore selection", () => {
     store.setQuery({ ...baseQuery, sorts: [{ fieldId: "n", direction: "asc" }] });
     expect(store.selection).toBeNull();
     expect(store.getRowSelectionKey(4)).toBe("");
+  });
+});
+
+describe("GridStore writes", () => {
+  const fields: Field[] = [
+    { id: "n", name: "N", type: "number", precision: 0 },
+    { id: "double", name: "Double", type: "formula", expression: "{n} * 2", resultType: "number" },
+    { id: "note", name: "Note", type: "text" },
+  ];
+  const confirmed = (op: Extract<RowOp, { op: "update" }>): RowOpResult => ({
+    ok: true,
+    rowId: op.rowId,
+    row: { ...row(Number(op.rowId.split("_").pop())), values: { ...op.values }, rev: op.rev + 1 },
+  });
+
+  /** A server whose batches are answered manually. */
+  function controlledServer() {
+    const batches: { ops: RowOp[]; answer: (results: RowOpResult[] | Error) => void }[] = [];
+    const sendBatch: SendBatch = (ops) =>
+      new Promise((resolve, reject) => {
+        batches.push({ ops, answer: (results) => (results instanceof Error ? reject(results) : resolve(results)) });
+      });
+    return { sendBatch, batches };
+  }
+  const setup = () => {
+    const server = controlledServer();
+    const store = createStore({ query: baseQuery, fields, fetchWindow: async (_q, o, l) => windowOf(o, l), sendBatch: server.sendBatch, initialWindow: windowOf(0, BLOCK_SIZE) });
+    return { store, ...server };
+  };
+
+  it("shows an edit immediately, recomputes the row's formulas, and sends one batch per tick", async () => {
+    const { store, batches } = setup();
+    store.writeCells([
+      { rowId: "row_a_1", fieldId: "n", value: 21 },
+      { rowId: "row_a_1", fieldId: "note", value: "hi" },
+      { rowId: "row_a_2", fieldId: "n", value: 5 },
+    ]);
+    expect(store.getRowAt(1)?.values).toMatchObject({ n: 21, double: 42, note: "hi" });
+    expect(store.getRowAt(1)?.saving).toBe(true);
+    expect(batches).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(batches).toHaveLength(1);
+    expect(batches[0].ops).toEqual([
+      { op: "update", rowId: "row_a_1", values: { n: 21, note: "hi" }, rev: 1 },
+      { op: "update", rowId: "row_a_2", values: { n: 5 }, rev: 1 },
+    ]);
+  });
+
+  it("adopts the server's row on success", async () => {
+    const { store, batches } = setup();
+    store.writeCells([{ rowId: "row_a_1", fieldId: "n", value: 7 }]);
+    await vi.advanceTimersByTimeAsync(0);
+    batches[0].answer(batches[0].ops.map((op) => confirmed(op as Extract<RowOp, { op: "update" }>)));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getRowAt(1)?.rev).toBe(2);
+    expect(store.getRowAt(1)?.saving).toBeUndefined();
+    expect(store.hasPendingWrites).toBe(false);
+  });
+
+  it("rolls back only the failed op, keeps the others, and reports the cell error", async () => {
+    const { store, batches } = setup();
+    store.writeCells([
+      { rowId: "row_a_1", fieldId: "n", value: -5 },
+      { rowId: "row_a_2", fieldId: "n", value: 9 },
+    ]);
+    await vi.advanceTimersByTimeAsync(0);
+    batches[0].answer([
+      { ok: false, rowId: "row_a_1", error: { code: "VALIDATION_ERROR", message: "Some values are invalid", fieldErrors: { n: "Must be ≥ 0" } } },
+      confirmed(batches[0].ops[1] as Extract<RowOp, { op: "update" }>),
+    ]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.getRowAt(1)?.values.n).toBe(1); // back to the confirmed value
+    expect(store.getRowAt(1)?.saveErrors).toEqual({ n: "Must be ≥ 0" });
+    expect(store.getRowAt(2)?.values.n).toBe(9);
+    expect(store.announcement).toBe("1 change couldn't be saved");
+  });
+
+  it("rolls back a whole batch on a network error", async () => {
+    const { store, batches } = setup();
+    store.writeCells([{ rowId: "row_a_3", fieldId: "n", value: 30 }]);
+    await vi.advanceTimersByTimeAsync(0);
+    batches[0].answer(new Error("Simulated failure"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getRowAt(3)?.values.n).toBe(3);
+    expect(store.getRowAt(3)?.saveErrors?.n).toBe("Not saved: Simulated failure");
+  });
+
+  it("sends batches one after another, keeping later edits applied while earlier ones settle", async () => {
+    const { store, batches } = setup();
+    store.writeCells([{ rowId: "row_a_1", fieldId: "n", value: 10 }]);
+    await vi.advanceTimersByTimeAsync(0);
+    store.writeCells([{ rowId: "row_a_1", fieldId: "n", value: 11 }]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(batches).toHaveLength(1); // the second waits for the first
+
+    batches[0].answer([{ ok: false, rowId: "row_a_1", error: { code: "X", message: "nope" } }]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getRowAt(1)?.values.n).toBe(11); // the later edit is still shown
+    expect(batches).toHaveLength(2);
+    expect(batches[1].ops[0]).toMatchObject({ values: { n: 11 } });
+
+    // re-editing the failed cell clears its error
+    expect(store.getRowAt(1)?.saveErrors).toEqual({ n: "nope" });
+    store.writeCells([{ rowId: "row_a_1", fieldId: "n", value: 12 }]);
+    expect(store.getRowAt(1)?.saveErrors).toBeUndefined();
   });
 });

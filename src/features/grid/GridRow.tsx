@@ -2,6 +2,7 @@ import type { VirtualItem } from "@tanstack/react-virtual";
 import { memo, type CSSProperties } from "react";
 import type { CellFormatter } from "@/lib/format";
 import { CellView } from "./CellView";
+import { CellEditor } from "./editors/CellEditor";
 import type { GridStore } from "./GridStore";
 import { GUTTER_WIDTH, type GridColumn } from "./layout";
 import { parseRowSelectionKey, type RowSelection } from "./selection";
@@ -25,6 +26,7 @@ export const cellId = (idPrefix: string, row: number, col: number) => `${idPrefi
 
 const cellClass = "flex h-full items-center overflow-hidden border-r border-zinc-200 px-2 dark:border-zinc-800";
 const SELECTION_COLOR = "#2563eb";
+const ERROR_COLOR = "#dc2626";
 
 /**
  * The Excel-like frame is drawn per cell with inset box-shadows on the range's outer
@@ -64,9 +66,12 @@ export const GridRow = memo(function GridRow({ store, idPrefix, index, top, heig
   const row = useGridStore(store, (state) => state.getRowAt(index));
   const status = useGridStore(store, (state) => state.getRowStatus(index));
   const selection = parseRowSelectionKey(useGridStore(store, (state) => state.getRowSelectionKey(index)));
+  const editingCol = useGridStore(store, (state) => state.getEditingCol(index));
 
   const cell = (column: GridColumn, col: number, className: string, style: CSSProperties) => {
     const { selected, style: selectedStyle } = selectionStyle(selection, col);
+    const saveError = row?.saveErrors?.[column.field.id];
+    const editing = row !== undefined && col === editingCol;
     return (
       <div
         key={column.field.id}
@@ -74,12 +79,17 @@ export const GridRow = memo(function GridRow({ store, idPrefix, index, top, heig
         role="gridcell"
         aria-colindex={col + 1}
         aria-selected={selected}
+        aria-invalid={saveError ? true : undefined}
+        title={saveError}
         data-row={index}
         data-col={col}
         className={`${cellClass} ${className}`}
-        style={{ ...style, ...selectedStyle }}
+        // A cell whose save failed keeps a red frame (over the selection's) until it's edited again.
+        style={{ ...style, ...selectedStyle, ...(saveError ? { boxShadow: `inset 0 0 0 2px ${ERROR_COLOR}` } : {}) }}
       >
-        {row ? (
+        {editing ? (
+          <CellEditor field={column.field} value={row.values[column.field.id]} initialText={store.editing?.initialText ?? null} />
+        ) : row ? (
           <CellView
             field={column.field}
             value={row.values[column.field.id]}

@@ -32,13 +32,15 @@ export function useGridSelection(store: GridStore, getBounds: () => Bounds, scro
     return () => window.removeEventListener("pointerup", stop);
   }, []);
 
-  function onKeyDown(event: KeyboardEvent<HTMLElement>) {
+  /** Handles navigation keys; returns false for keys that aren't navigation, so editing can take them. */
+  function handleKey(event: KeyboardEvent<HTMLElement>): boolean {
     const before = store.selection;
     const after = navigate(before, event, getBounds());
-    if (!after) return;
+    if (!after) return false;
     event.preventDefault();
     store.setSelection(after);
     scrollToCell(movedCorner(before, after));
+    return true;
   }
 
   function onPointerDown(event: PointerEvent<HTMLElement>) {
@@ -81,5 +83,5 @@ export function useGridSelection(store: GridStore, getBounds: () => Bounds, scro
     }
   }
 
-  return { onKeyDown, onPointerDown, onPointerMove };
+  return { handleKey, onPointerDown, onPointerMove };
 }

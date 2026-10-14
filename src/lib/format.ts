@@ -80,3 +80,38 @@ export function createCellFormatter(field: Field, context: FormatContext): CellF
       return (value) => (empty(value) ? "" : String(value));
   }
 }
+
+/**
+ * The text an editor opens with. Unlike display text it must parse back to the same
+ * value with `createCoercer`: dates are numeric in the locale's order ("01.03.2026,
+ * 14:30" in uk-UA) instead of "1 бер. 2026 р.", numbers have no grouping or symbol.
+ */
+export function toEditText(field: Field, value: CellValue | undefined, context: Omit<FormatContext, "labelOf"> & Partial<Pick<FormatContext, "labelOf">>): string {
+  if (value === null || value === undefined) return "";
+  switch (field.type) {
+    case "number":
+    case "currency": {
+      if (typeof value !== "number") return "";
+      const digits = field.type === "number" ? field.precision : 20;
+      return new Intl.NumberFormat(context.locale, { useGrouping: false, maximumFractionDigits: digits }).format(value);
+    }
+    case "date": {
+      if (typeof value !== "string") return "";
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+      const format = new Intl.DateTimeFormat(context.locale, {
+        timeZone: dateOnly ? "UTC" : (field.timeZone ?? context.timeZone),
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        ...(dateOnly ? {} : { hour: "2-digit", minute: "2-digit", hourCycle: "h23" as const }),
+      });
+      return format.format(dateOnly ? new Date(`${value}T00:00:00Z`) : new Date(value));
+    }
+    case "singleSelect":
+    case "multiSelect":
+    case "link":
+      return createCellFormatter(field, { labelOf: () => undefined, ...context })(value);
+    default:
+      return Array.isArray(value) ? value.join(", ") : String(value);
+  }
+}
