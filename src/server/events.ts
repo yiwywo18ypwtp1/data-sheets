@@ -1,5 +1,6 @@
 import "server-only";
 import { EventEmitter } from "node:events";
+import type { Comment } from "@/lib/domain/comment";
 import type { Row } from "@/lib/domain/row";
 import type { View } from "@/lib/domain/view";
 import { now } from "./clock";
@@ -30,7 +31,9 @@ export type EventPayload =
   | { kind: "reload"; origin: Origin }
   /** Fields changed: reload the schema. `deletedFieldId` lets an open editor of that field explain why it closed. */
   | { kind: "schema"; origin: Origin; deletedFieldId?: string }
-  | { kind: "view"; origin: Origin; view: View; version: number };
+  | { kind: "view"; origin: Origin; view: View; version: number }
+  /** A comment was added to a record (`comment`) or deleted (`deletedId`). */
+  | { kind: "comment"; origin: Origin; rowId: string; comment?: Comment; deletedId?: string };
 
 export type TableEvent = { seq: number; tableId: string; at: string } & EventPayload;
 

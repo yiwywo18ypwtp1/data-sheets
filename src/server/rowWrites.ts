@@ -8,6 +8,7 @@ import { now } from "./clock";
 import { appendEvent, type Origin, type RowChange } from "./events";
 import { computeFields, FormulaCache, type ComputedResult, type LinkedValuesReader } from "./compute";
 import { getDb } from "./db";
+import { recordCellChanges } from "./history";
 import { getRowsByIds, markRowsChanged } from "./rows";
 import { serializeCells, serializeErrors, toRow, type RowRecord } from "./storage";
 import { getBaseSchema } from "./tables";
@@ -74,7 +75,11 @@ class BatchContext {
   readonly timestamp = this.evalContext.now.toISOString();
   private readonly schemas = new Map<string, z.ZodType<CellValue>>();
 
-  constructor(baseId: string) {
+  constructor(
+    baseId: string,
+    /** Who writes: for the event log and the cell history. */
+    readonly origin: Origin = SYSTEM_ORIGIN,
+  ) {
     const schema = getBaseSchema(baseId);
     this.fields = new Map(schema.flatMap((table) => table.fields.map((field) => [field.id, field] as const)));
     this.tableOfField = new Map(schema.flatMap((table) => table.fields.map((field) => [field.id, table.tableId] as const)));
@@ -218,6 +223,7 @@ function updateRow(tableId: string, op: Extract<RowOp, { op: "update" }>, batch:
     batch.evalContext,
   );
   const row = saveRow(record, computed, batch.timestamp);
+  recordCellChanges(tableId, row.id, current.values, values, row.rev, batch.origin, batch.timestamp);
   addChanges(changes, tableId, [row.id], [...Object.keys(values), ...order]);
   batch.log.touch(tableId, row.id, Object.keys(values));
   return row;
@@ -306,7 +312,7 @@ function propagate(initial: Map<string, TableChanges>, batch: BatchContext) {
  */
 export function applyRowBatch(table: { id: string; baseId: string }, ops: RowOp[], origin: Origin = SYSTEM_ORIGIN): RowOpResult[] {
   const db = getDb();
-  const batch = new BatchContext(table.baseId);
+  const batch = new BatchContext(table.baseId, origin);
   const changes = new Map<string, TableChanges>();
   const deleted = new Map<string, Set<string>>();
 
@@ -330,7 +336,7 @@ export function applyRowBatch(table: { id: string; baseId: string }, ops: RowOp[
     unlinkDeletedRows(deleted, batch, changes);
     markRowsChanged(table.id);
     propagate(changes, batch);
-    batch.log.emit(origin);
+    batch.log.emit(batch.origin);
     return results;
   })();
 }

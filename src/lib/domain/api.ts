@@ -26,3 +26,27 @@ export type RowWindowResponse = RowWindow & {
   /** Primary values of records referenced by link cells in `rows`: `{ rowId: label }`. */
   linkedLabels: Record<string, string>;
 };
+
+/** One value written into a record's cell (`GET /api/tables/:id/rows/:rowId/history`). */
+export type CellHistoryEntry = {
+  id: number;
+  fieldId: string;
+  /** The value it replaced. */
+  before: CellValue;
+  after: CellValue;
+  /** The record's revision after the write. */
+  rev: number;
+  by: { userId: string; name: string };
+  at: string;
+};
+
+export type CellHistoryResponse = {
+  entries: CellHistoryEntry[];
+  /** Pass as `before` for the next (older) page; null at the end. */
+  next: number | null;
+  /** Labels of records in link values, like `RowWindowResponse.linkedLabels`. */
+  linkedLabels: Record<string, string>;
+};
+
+/** `GET /api/tables/:id/rows/:rowId` */
+export type RowResponse = { row: Row; linkedLabels: Record<string, string> };

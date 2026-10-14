@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Suspense } from "react";
+import { MentionsInbox } from "@/features/records/MentionsInbox";
 import { CurrentUserBadge } from "@/features/settings/CurrentUserBadge";
 
 /** The app's frame (bases, settings). Public forms (`/f/…`) are outside it: guests see no app chrome. */
@@ -10,7 +11,8 @@ export default function AppLayout({ children }: LayoutProps<"/">) {
         <Link href="/" className="font-semibold">
           Data Sheets
         </Link>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-3">
+          <MentionsInbox />
           {/* Reads the user cookie, so it streams in; the rest of the header is static. */}
           <Suspense fallback={<span className="text-sm text-zinc-400">…</span>}>
             <CurrentUserBadge />

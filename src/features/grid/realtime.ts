@@ -1,3 +1,4 @@
+import type { Comment } from "@/lib/domain/comment";
 import type { Row } from "@/lib/domain/row";
 import type { View } from "@/lib/domain/view";
 import { getClientId } from "./api";
@@ -10,6 +11,7 @@ export type TableEvent = { seq: number; tableId: string; at: string } & (
   | { kind: "reload"; origin: Origin }
   | { kind: "schema"; origin: Origin; deletedFieldId?: string }
   | { kind: "view"; origin: Origin; view: View; version: number }
+  | { kind: "comment"; origin: Origin; rowId: string; comment?: Comment; deletedId?: string }
 );
 export type PresenceEntry = { clientId: string; userId: string; name: string; color: string; viewId: string | null; cell: { rowId: string; fieldId: string } | null };
 

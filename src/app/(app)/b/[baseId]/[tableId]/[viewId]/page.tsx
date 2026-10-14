@@ -3,6 +3,7 @@ import { connection } from "next/server";
 import type { Field } from "@/lib/domain/field";
 import { filterFieldIssues } from "@/lib/domain/filter";
 import { decodeFilterParam } from "@/lib/domain/query";
+import { idSchema } from "@/lib/domain/ids";
 import { hasRole } from "@/lib/domain/user";
 import { routes } from "@/lib/routes";
 import { FormBuilder } from "@/features/forms/FormBuilder";
@@ -35,7 +36,7 @@ function schemaKey(fields: Field[]): string {
  */
 export default async function ViewPage({ params, searchParams }: PageProps<"/b/[baseId]/[tableId]/[viewId]">) {
   const { baseId, tableId, viewId } = await params;
-  const { filter: filterParam } = await searchParams;
+  const { filter: filterParam, record: recordParam } = await searchParams;
   // Rows and "now" must be read per request. Prefetching can prerender with params and
   // cookies known, and better-sqlite3 is synchronous, so we opt out explicitly.
   await connection();
@@ -125,6 +126,8 @@ export default async function ViewPage({ params, searchParams }: PageProps<"/b/[
         view={view}
         viewVersion={getView(view.id)?.version ?? 0}
         initialWindow={{ ...initialWindow, offset: 0, linkedLabels }}
+        initialRecordId={idSchema.safeParse(recordParam).data ?? null}
+        currentUser={{ id: user.id, name: user.name }}
       />
     </div>
   );

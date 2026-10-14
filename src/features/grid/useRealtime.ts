@@ -7,6 +7,8 @@ import { getClientId, sendPresence } from "./api";
 import type { GridStore } from "./GridStore";
 import type { GridColumn } from "./layout";
 import { connectRealtime, type RealtimeStatus, type TableEvent } from "./realtime";
+import { emitCommentEvent } from "@/features/records/commentBus";
+import { notifyMention } from "@/features/records/mentions";
 import { pushToast } from "./toastStore";
 
 const PRESENCE_HEARTBEAT_MS = 20_000;
@@ -24,6 +26,9 @@ type Options = {
   onSchemaChange: (event: Extract<TableEvent, { kind: "schema" }>) => void;
   /** Another user saved this view. */
   onViewSaved: (view: View, version: number, by: string) => void;
+  /** A comment mentioning this user offers to open its record. */
+  currentUserId: string;
+  onOpenRecord: (rowId: string) => void;
 };
 
 /**
@@ -32,13 +37,13 @@ type Options = {
  * this tab's selected cell as presence and resends unsaved edits when the browser is
  * back online. Returns the connection status for the toolbar.
  */
-export function useRealtime({ tableId, viewId, store, fields, columns, locale, timeZone, onSchemaChange, onViewSaved }: Options): RealtimeStatus {
+export function useRealtime({ tableId, viewId, store, fields, columns, locale, timeZone, onSchemaChange, onViewSaved, currentUserId, onOpenRecord }: Options): RealtimeStatus {
   const [status, setStatus] = useState<RealtimeStatus>("connecting");
 
   // Handlers read the latest props through a ref-like closure object, so the connection isn't reopened on every render.
-  const [handlers] = useState(() => ({ fields, locale, timeZone, onSchemaChange, onViewSaved }));
+  const [handlers] = useState(() => ({ fields, locale, timeZone, onSchemaChange, onViewSaved, currentUserId, onOpenRecord }));
   useEffect(() => {
-    Object.assign(handlers, { fields, locale, timeZone, onSchemaChange, onViewSaved });
+    Object.assign(handlers, { fields, locale, timeZone, onSchemaChange, onViewSaved, currentUserId, onOpenRecord });
   });
 
   useEffect(() => {
@@ -72,6 +77,10 @@ export function useRealtime({ tableId, viewId, store, fields, columns, locale, t
           break;
         case "view":
           if (event.view.id === viewId) handlers.onViewSaved(event.view, event.version, event.origin.name);
+          break;
+        case "comment":
+          emitCommentEvent(event);
+          if (event.comment?.mentions.includes(handlers.currentUserId)) notifyMention(event, handlers.onOpenRecord);
           break;
       }
     };

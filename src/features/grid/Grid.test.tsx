@@ -61,7 +61,7 @@ function cell(row: number, col: number): HTMLElement {
 }
 
 function setup() {
-  render(<Grid tableId="tbl_1" canEdit canChangeSchema={false} tables={[]} linkFilter={null} linkFilterError={null} importHref={null} tableName="Items" fields={fields} primaryFieldId="fld_name" view={view} viewVersion={1} initialWindow={initialWindow} />);
+  render(<Grid tableId="tbl_1" canEdit canChangeSchema={false} tables={[]} linkFilter={null} linkFilterError={null} importHref={null} tableName="Items" fields={fields} primaryFieldId="fld_name" view={view} viewVersion={1} initialRecordId={null} currentUser={{ id: "usr_editor", name: "Eddie Editor" }} initialWindow={initialWindow} />);
   return userEvent.setup();
 }
 

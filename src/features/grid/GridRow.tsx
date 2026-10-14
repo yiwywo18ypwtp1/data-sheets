@@ -123,7 +123,7 @@ export const GridRow = memo(function GridRow({ store, idPrefix, index, top, heig
       aria-rowindex={displayIndex + 2}
       aria-busy={status === "loading" || undefined}
       // A row being deleted stays visible, dimmed and struck through, until the server confirms.
-      className={`absolute left-0 flex border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950 ${row?.deleting ? "line-through opacity-40" : ""}`}
+      className={`group absolute left-0 flex border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950 ${row?.deleting ? "line-through opacity-40" : ""}`}
       style={{ top, height, width }}
     >
       <div className="sticky left-0 z-10 flex h-full bg-white dark:bg-zinc-950">
@@ -134,6 +134,12 @@ export const GridRow = memo(function GridRow({ store, idPrefix, index, top, heig
           className="flex h-full shrink-0 cursor-pointer items-center justify-end border-r border-zinc-200 pr-2 text-xs text-zinc-400 tabular-nums hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-900"
           style={{ width: GUTTER_WIDTH }}
         >
+          {row && (
+            // Opens the record panel. Out of the tab order: Shift+Enter opens it from the keyboard.
+            <button type="button" tabIndex={-1} data-expand-row={index} title="Expand record" className="mr-auto ml-1 hidden rounded px-0.5 text-zinc-400 group-hover:block hover:bg-zinc-200 hover:text-zinc-700 dark:hover:bg-zinc-800">
+              ⤢
+            </button>
+          )}
           {index + 1}
         </div>
         {status === "error" ? (

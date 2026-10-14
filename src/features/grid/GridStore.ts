@@ -201,6 +201,23 @@ export class GridStore {
     return id === undefined ? undefined : (this.display.get(id) ?? this.rows.get(id));
   }
 
+  /** A row held by the store (loaded or added here), as displayed; undefined if it isn't loaded. */
+  getRowById(rowId: string): DisplayRow | undefined {
+    return this.display.get(rowId) ?? this.rows.get(rowId);
+  }
+
+  /** The position of a loaded row in the current result, or null. */
+  indexOfRow(rowId: string): number | null {
+    const local = this.localRows.indexOf(rowId);
+    if (local >= 0) return this.serverTotal + local;
+    for (const [blockIndex, block] of this.blocks) {
+      if (block.status !== "ready") continue;
+      const i = block.rowIds.indexOf(rowId);
+      if (i >= 0) return blockIndex * BLOCK_SIZE + i;
+    }
+    return null;
+  }
+
   getRowStatus(index: number): RowStatus {
     if (this.isLocalIndex(index)) return "ready";
     const block = this.blocks.get(Math.floor(index / BLOCK_SIZE));

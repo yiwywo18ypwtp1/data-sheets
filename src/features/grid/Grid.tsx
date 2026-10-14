@@ -12,8 +12,11 @@ import type { View, ViewQuery } from "@/lib/domain/view";
 import { createCellFormatter } from "@/lib/format";
 import { DeleteFieldDialog } from "@/features/fields/DeleteFieldDialog";
 import { FieldDialog, type BaseTable } from "@/features/fields/FieldDialog";
+import { RecordPanel, type RecordTab } from "@/features/records/RecordPanel";
+import { useOpenRecord } from "@/features/records/useOpenRecord";
 import { ViewPanel } from "@/features/view-panel/ViewPanel";
 import { fetchRowWindow, sendRowBatch } from "./api";
+import { CellMenu } from "./CellMenu";
 import { GridFooter } from "./GridFooter";
 import { GridHeader } from "./GridHeader";
 import { cellId, GridRow } from "./GridRow";
@@ -21,7 +24,7 @@ import { GridStore } from "./GridStore";
 import { GridToolbar } from "./GridToolbar";
 import { GroupHeaderRow } from "./GroupHeaderRow";
 import { FOOTER_HEIGHT, gridColumns, GUTTER_WIDTH, HEADER_HEIGHT, moveField, ROW_HEIGHTS, setColumnWidth, setFieldHidden } from "./layout";
-import type { CellPosition } from "./selection";
+import { rangeOf, type CellPosition } from "./selection";
 import { useCellEditing } from "./useCellEditing";
 import { useClipboard } from "./useClipboard";
 import { GridEditingContext } from "./GridEditingContext";
@@ -54,6 +57,9 @@ type GridProps = {
   /** The view's version, sent as If-Match when the column layout is saved. */
   viewVersion: number;
   initialWindow: RowWindowResponse;
+  /** `?record=`: the record to open in the side panel. */
+  initialRecordId: string | null;
+  currentUser: { id: string; name: string };
 };
 
 /** Size assumed before the browser measures the container, so the server renders the first rows too. */
@@ -69,7 +75,7 @@ const INITIAL_RECT = { width: 1280, height: 800 };
  * through `aria-activedescendant`, which works even though cells come and go as
  * they scroll in and out of view.
  */
-export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, linkFilterError, importHref, tableName, fields, primaryFieldId, view, viewVersion, initialWindow }: GridProps) {
+export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, linkFilterError, importHref, tableName, fields, primaryFieldId, view, viewVersion, initialWindow, initialRecordId, currentUser }: GridProps) {
   const [store] = useState(
     () =>
       new GridStore({
@@ -228,7 +234,41 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
       savedView.applyRemote(saved, version);
       pushToast({ message: `${by} saved changes to this view.` });
     },
+    currentUserId: currentUser.id,
+    onOpenRecord: (rowId) => setRecord({ rowId, tab: "comments", fieldId: null }),
   });
+  // The record side panel, and the right-click menu of a cell.
+  const [record, setRecord] = useOpenRecord(initialRecordId ? { rowId: initialRecordId, tab: "comments", fieldId: null } : null);
+  // A link to another record of this view (a mention in the inbox) re-renders the page with a new `?record=`.
+  const [linkedRecordId, setLinkedRecordId] = useState(initialRecordId);
+  if (linkedRecordId !== initialRecordId) {
+    setLinkedRecordId(initialRecordId);
+    if (initialRecordId) setRecord({ rowId: initialRecordId, tab: "comments", fieldId: null });
+  }
+  const recordRow = useGridStore(store, (state) => (record ? state.getRowById(record.rowId) : undefined));
+  const [cellMenu, setCellMenu] = useState<{ x: number; y: number; cell: CellPosition } | null>(null);
+  const openRecordAt = (cell: CellPosition, tab: RecordTab, fieldId: string | null = null) => {
+    const row = store.getRowAt(cell.row);
+    if (row) setRecord({ rowId: row.id, tab, fieldId });
+  };
+  const closeRecord = () => {
+    setRecord(null);
+    scrollRef.current?.focus({ preventScroll: true });
+  };
+  /** "Restore" in the cell history: an ordinary edit, so Cmd+Z undoes it (when the cell is on screen in this view). */
+  const restoreValue = (rowId: string, fieldId: string, value: CellValue) => {
+    const row = store.getRowById(rowId);
+    const index = store.indexOfRow(rowId);
+    const col = columns.findIndex((column) => column.field.id === fieldId);
+    const name = fields.find((field) => field.id === fieldId)?.name ?? "a field";
+    if (row && index !== null && col >= 0) {
+      store.applyChanges(`restore of ${name}`, [{ rowId, fieldId, before: row.values[fieldId] ?? null, after: value, row: index, col }]);
+    } else {
+      store.writeCells([{ rowId, fieldId, value }]);
+    }
+    store.announce(`Restored an earlier value of ${name}`);
+  };
+
   const announcement = useGridStore(store, (state) => state.announcement);
   const announcementId = useGridStore(store, (state) => state.announcementId);
   const idPrefix = useId();
@@ -296,7 +336,26 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
         aria-activedescendant={activeCell ? cellId(idPrefix, activeRow, activeCol) : undefined}
         className="relative min-h-0 flex-1 overflow-auto text-sm outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
         onKeyDown={(event) => {
+          if (event.key === "Enter" && event.shiftKey && !store.editing && store.selection) {
+            // Shift+Enter opens the record, with the active cell's history.
+            event.preventDefault();
+            return openRecordAt(store.selection.anchor, "history", columns[store.selection.anchor.col]?.field.id ?? null);
+          }
           if (!selection.handleKey(event)) editing.handleKey(event);
+        }}
+        onClick={(event) => {
+          const expand = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-expand-row]") : null;
+          if (expand) openRecordAt({ row: Number(expand.dataset.expandRow), col: 0 }, "comments");
+        }}
+        onContextMenu={(event) => {
+          const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-row][data-col]") : null;
+          if (!target || store.editing) return;
+          event.preventDefault();
+          const cell = { row: Number(target.dataset.row), col: Number(target.dataset.col) };
+          const range = store.selection ? rangeOf(store.selection) : null;
+          const inside = range && cell.row >= range.top && cell.row <= range.bottom && cell.col >= range.left && cell.col <= range.right;
+          if (!inside) store.setSelection({ anchor: cell, focus: cell });
+          setCellMenu({ x: event.clientX, y: event.clientY, cell });
         }}
         onPointerDown={selection.onPointerDown}
         onPointerMove={selection.onPointerMove}
@@ -350,6 +409,34 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
         </GridEditingContext.Provider>
       </div>
       <Toasts />
+      {cellMenu && (
+        <CellMenu
+          x={cellMenu.x}
+          y={cellMenu.y}
+          onClose={() => setCellMenu(null)}
+          items={[
+            { label: "Expand record", onSelect: () => openRecordAt(cellMenu.cell, "comments") },
+            { label: "Comment on record", onSelect: () => openRecordAt(cellMenu.cell, "comments") },
+            { label: "Cell history", shortcut: "⇧↵", onSelect: () => openRecordAt(cellMenu.cell, "history", columns[cellMenu.cell.col]?.field.id ?? null) },
+          ]}
+        />
+      )}
+      {record && (
+        <RecordPanel
+          tableId={tableId}
+          record={record}
+          row={recordRow}
+          fields={columns.map((column) => column.field)}
+          primaryFieldId={primaryFieldId}
+          currentUserId={currentUser.id}
+          locale={locale}
+          timeZone={timeZone}
+          labelOf={store.getLabel}
+          onRestore={canEdit ? (fieldId, value) => restoreValue(record.rowId, fieldId, value) : null}
+          onChange={setRecord}
+          onClose={closeRecord}
+        />
+      )}
       {fieldDialog?.mode === "delete" ? (
         <DeleteFieldDialog
           tableId={tableId}

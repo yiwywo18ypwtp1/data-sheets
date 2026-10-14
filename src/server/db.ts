@@ -61,6 +61,35 @@ const SCHEMA = `
     row_id TEXT,
     created_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS cell_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_id TEXT NOT NULL,
+    row_id TEXT NOT NULL,
+    field_id TEXT NOT NULL,
+    before TEXT,
+    after TEXT,
+    rev INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS cell_history_by_row ON cell_history(row_id, id);
+  CREATE TABLE IF NOT EXISTS comments (
+    id TEXT PRIMARY KEY,
+    table_id TEXT NOT NULL,
+    row_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS comments_by_row ON comments(row_id, created_at);
+  CREATE TABLE IF NOT EXISTS mentions (
+    comment_id TEXT NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
+    read_at TEXT,
+    PRIMARY KEY (comment_id, user_id)
+  );
+  CREATE INDEX IF NOT EXISTS mentions_by_user ON mentions(user_id);
   CREATE TABLE IF NOT EXISTS import_batches (
     key TEXT PRIMARY KEY,
     table_id TEXT NOT NULL REFERENCES tables(id),

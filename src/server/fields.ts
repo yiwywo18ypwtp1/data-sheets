@@ -12,6 +12,7 @@ import { FormulaSyntaxError } from "@/lib/formula/lexer";
 import { fieldByNameResolver, toDisplayExpression, toStoredExpression } from "@/lib/formula/references";
 import { now } from "./clock";
 import { getDb } from "./db";
+import { forgetFieldHistory } from "./history";
 import { ApiError, notFound, zodFieldErrors } from "./errors";
 import { appendEvent, type Origin } from "./events";
 import { expireFormCache, formTags } from "./formCache";
@@ -375,6 +376,7 @@ export function deleteField(tableId: string, fieldId: string, force: boolean, or
     const updateView = db.prepare("UPDATE views SET config = ?, version = version + 1 WHERE id = ?");
     for (const view of table.views) updateView.run(JSON.stringify(viewWithoutField(view, fieldId)), view.id);
     db.prepare("UPDATE rows SET cells = json_remove(cells, ?) WHERE table_id = ?").run(`$."${fieldId}"`, tableId);
+    forgetFieldHistory(fieldId);
   })();
   announceSchemaChange(table.id, recomputeAllRows(table.baseId, [fieldId]), origin, fieldId);
 }
