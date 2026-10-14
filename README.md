@@ -68,6 +68,7 @@ npm run lint
 - "Unsaved view changes" appears with Save view / Reset. Save, reload: the same view. Viewers can filter but not save.
 - While the filter is unsaved, the URL carries it (`?filter=<base64>`): "Copy link with filter" and open it in another tab, which shows the same rows with the filter as an unsaved change. A link whose filter doesn't fit the table (`?filter=garbage`) opens the saved view with a notice.
 - Sorts are reordered by dragging the ⠿ handle, or with ↑/↓ from the keyboard.
+- "+ Add group": group by Status, then by Paid. Group headers show the value, the count and the sums of numeric columns; ▾ collapses a group. Scrolling stays virtualized with groups expanded or collapsed. Moving the selection into a collapsed group (arrows, undo) expands it.
 
 ### Fields and formulas (as a creator)
 
@@ -110,10 +111,9 @@ npm run lint
 
 Planned in this order, with the reason each one waits:
 
-1. **Grouping (2.1 Advanced).** Needs group headers in the virtual row model (`[header, rows…]` index mapping) and per-group aggregates from the server.
-2. **Import resume after reload and link columns (2.4 Advanced).** Resume needs the import id and progress in `sessionStorage`, plus the stored batch keys the server already keeps.
-3. **Public form `/f/[viewId]` (2.5).**
-4. **RTL and Playwright tests.** The pure logic is unit-tested (formulas, coercion, filters, mapping, the grid store, undo, selection, the API). The UI flows were checked with ad-hoc Playwright scripts, not committed tests.
+1. **Import resume after reload and link columns (2.4 Advanced).** Resume needs the import id and progress in `sessionStorage`, plus the stored batch keys the server already keeps.
+2. **Public form `/f/[viewId]` (2.5).**
+3. **RTL and Playwright tests.** The pure logic is unit-tested (formulas, coercion, filters, mapping, the grid store, undo, selection, the API). The UI flows were checked with ad-hoc Playwright scripts, not committed tests.
 
 Known limitations:
 - Footer sums update on the next window load, not on every edit.

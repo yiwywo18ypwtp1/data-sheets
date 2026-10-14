@@ -1,5 +1,6 @@
 import "server-only";
-import type { Aggregates, RowWindow } from "@/lib/domain/api";
+import type { Aggregates, RowGroup, RowWindow } from "@/lib/domain/api";
+import type { CellValue } from "@/lib/domain/cell";
 import type { Field } from "@/lib/domain/field";
 import { usesRelativeDates, type FilterGroup } from "@/lib/domain/filter";
 import type { Row } from "@/lib/domain/row";
@@ -16,6 +17,10 @@ function isNumeric(field: Field): boolean {
 export type RowQuery = {
   filter: FilterGroup;
   sorts: Sort[];
+  /** Up to two fields to group by: rows are ordered by them first. */
+  groupBy?: string[];
+  /** Include the group structure in the answer (the grid asks once per query). */
+  withGroups?: boolean;
   offset: number;
   limit: number;
   context: QueryContext;
@@ -33,7 +38,7 @@ export type RowQuery = {
  * match again and just ages out of the LRU. Not the table version: that also changes
  * when any view is saved (a column resize), which doesn't change any result.
  */
-type ResultSet = { ids: string[]; aggregates: Aggregates };
+type ResultSet = { ids: string[]; aggregates: Aggregates; groups: RowGroup[] };
 
 const MAX_CACHED_RESULTS = 10; // ~2.5 MB of ids each at 50 000 rows
 /**
@@ -57,35 +62,67 @@ const RELATIVE_DATE_TTL_MS = 15 * 60_000;
 
 function cacheKey(table: Pick<TableMeta, "id" | "fields">, query: RowQuery): string {
   const clock = usesRelativeDates(query.filter) ? Math.floor(query.context.now.getTime() / RELATIVE_DATE_TTL_MS) : null;
-  return JSON.stringify([table.id, dataVersions.get(table.id) ?? 0, table.fields, query.filter, query.sorts, query.context.timeZone, clock]);
+  return JSON.stringify([table.id, dataVersions.get(table.id) ?? 0, table.fields, query.filter, query.sorts, query.groupBy ?? [], query.context.timeZone, clock]);
 }
 
-function computeResultSet(tableId: string, fields: Field[], query: RowQuery): ResultSet {
-  const where = compileFilter(query.filter, fields, query.context);
-  const orderBy = compileSorts(query.sorts, fields);
-  const numeric = fields.filter(isNumeric);
-  const columns = numeric.map((_, i) => `, json_extract(cells, ?) AS n${i}`).join("");
-
-  // One pass returns the ordered ids and the numeric values to aggregate.
-  const records = getDb()
-    .prepare(`SELECT id${columns} FROM rows WHERE table_id = ? AND (${where.sql}) ORDER BY ${orderBy.sql}`)
-    .all(...numeric.map((field) => `$."${field.id}"`), tableId, ...where.params, ...orderBy.params) as Record<string, unknown>[];
-
-  const aggregates: Aggregates = {};
-  numeric.forEach((field, i) => {
+function sumsOf(values: unknown[][], numericCount: number): Aggregates[string][] {
+  return Array.from({ length: numericCount }, (_, i) => {
     let sum = 0;
     let count = 0;
-    for (const record of records) {
-      const value = record[`n${i}`];
+    for (const record of values) {
+      const value = record[i];
       if (typeof value === "number") {
         sum += value;
         count++;
       }
     }
-    aggregates[field.id] = { sum, avg: count > 0 ? sum / count : null };
+    return { sum, avg: count > 0 ? sum / count : null };
   });
+}
 
-  return { ids: records.map((record) => record.id as string), aggregates };
+function computeResultSet(tableId: string, fields: Field[], query: RowQuery): ResultSet {
+  const groupFields = (query.groupBy ?? []).flatMap((id) => fields.filter((field) => field.id === id));
+  const where = compileFilter(query.filter, fields, query.context);
+  // Groups come first in the order, so each group's rows are contiguous; the view's sorts order rows within a group.
+  const orderBy = compileSorts([...groupFields.map((field) => ({ fieldId: field.id, direction: "asc" as const })), ...query.sorts.filter((sort) => !groupFields.some((field) => field.id === sort.fieldId))], fields);
+  const numeric = fields.filter(isNumeric);
+  const columns = [...numeric.map((_, i) => `, json_extract(cells, ?) AS n${i}`), ...groupFields.map((_, i) => `, json_extract(cells, ?) AS g${i}`)].join("");
+
+  // One pass returns the ordered ids, the numeric values to aggregate and the group keys.
+  const records = getDb()
+    .prepare(`SELECT id${columns} FROM rows WHERE table_id = ? AND (${where.sql}) ORDER BY ${orderBy.sql}`)
+    .all(...numeric.map((field) => `$."${field.id}"`), ...groupFields.map((field) => `$."${field.id}"`), tableId, ...where.params, ...orderBy.params) as Record<string, unknown>[];
+
+  const numbers = records.map((record) => numeric.map((_, i) => record[`n${i}`]));
+  const aggregatesOf = (from: number, to: number): Aggregates => {
+    const sums = sumsOf(numbers.slice(from, to), numeric.length);
+    return Object.fromEntries(numeric.map((field, i) => [field.id, sums[i]]));
+  };
+
+  const groups: RowGroup[] = [];
+  if (groupFields.length > 0) {
+    const keyOf = (record: Record<string, unknown>, level: number) => (record[`g${level}`] ?? null) as CellValue;
+    let top = 0;
+    while (top < records.length) {
+      const topKey = keyOf(records[top], 0);
+      let end = top;
+      while (end < records.length && keyOf(records[end], 0) === topKey) end++;
+      groups.push({ level: 0, fieldId: groupFields[0].id, key: topKey, start: top, count: end - top, aggregates: aggregatesOf(top, end) });
+      if (groupFields.length > 1) {
+        let sub = top;
+        while (sub < end) {
+          const subKey = keyOf(records[sub], 1);
+          let subEnd = sub;
+          while (subEnd < end && keyOf(records[subEnd], 1) === subKey) subEnd++;
+          groups.push({ level: 1, fieldId: groupFields[1].id, key: subKey, start: sub, count: subEnd - sub, aggregates: aggregatesOf(sub, subEnd) });
+          sub = subEnd;
+        }
+      }
+      top = end;
+    }
+  }
+
+  return { ids: records.map((record) => record.id as string), aggregates: aggregatesOf(0, records.length), groups };
 }
 
 /**
@@ -109,6 +146,7 @@ export function queryRows(table: Pick<TableMeta, "id" | "fields">, query: RowQue
     rows: getRowsByIds(tableId, ids),
     total: resultSet.ids.length,
     aggregates: resultSet.aggregates,
+    ...(query.withGroups && (query.groupBy?.length ?? 0) > 0 ? { groups: resultSet.groups } : {}),
   };
 }
 

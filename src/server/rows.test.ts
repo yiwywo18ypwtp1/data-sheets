@@ -218,3 +218,36 @@ describe("queryRows sorting, paging and aggregates", () => {
     expect(window.aggregates.fld_o_notes).toBeUndefined();
   });
 });
+
+describe("queryRows grouping", () => {
+  const grouped = (groupBy: string[]) =>
+    queryRows(orders, { filter: { conjunction: "and", conditions: [], groups: [] }, sorts: [{ fieldId: "fld_o_qty", direction: "desc" }], groupBy, withGroups: true, offset: 0, limit: ALL, context });
+
+  it("orders rows by group, then by the view's sorts, and describes every group", () => {
+    const { rows, groups = [], total } = grouped(["fld_o_status"]);
+    const top = groups.filter((group) => group.level === 0);
+    expect(top.reduce((sum, group) => sum + group.count, 0)).toBe(total);
+    const statusField = orders.fields.find((field) => field.id === "fld_o_status")!;
+    const optionOrder = statusField.type === "singleSelect" ? statusField.options.map((option) => option.id) : [];
+    // Groups follow the option order, with empty values last.
+    const keys = top.map((group) => group.key);
+    expect(keys.filter((key) => key !== null)).toEqual(optionOrder.filter((id) => keys.includes(id)));
+    for (const group of top) {
+      const members = rows.slice(group.start, group.start + group.count);
+      expect(members.every((row) => (row.values.fld_o_status ?? null) === group.key)).toBe(true);
+      const qty = members.map((row) => (row.values.fld_o_qty as number | undefined) ?? -Infinity);
+      expect(qty).toEqual([...qty].sort((a, b) => b - a));
+      expect(group.aggregates.fld_o_qty.sum).toBe(members.reduce((sum, row) => sum + ((row.values.fld_o_qty as number | undefined) ?? 0), 0));
+    }
+  });
+
+  it("nests a second level inside each group", () => {
+    const { groups = [] } = grouped(["fld_o_status", "fld_o_paid"]);
+    let parent = groups[0];
+    for (const group of groups) {
+      if (group.level === 0) parent = group;
+      else expect(group.start >= parent.start && group.start + group.count <= parent.start + parent.count).toBe(true);
+    }
+    expect(groups.some((group) => group.level === 1)).toBe(true);
+  });
+});

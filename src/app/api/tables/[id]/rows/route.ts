@@ -21,6 +21,10 @@ const querySchema = z.object({
   filter: z.string().optional(),
   /** `fld_a:asc,fld_b:desc`; overrides the view's sorts. */
   sort: z.string().optional(),
+  /** `fld_a,fld_b` (at most two); overrides the view's grouping. Empty: no grouping. */
+  group: z.string().optional(),
+  /** `1`: include the group structure (positions, counts, aggregates of every group). */
+  withGroups: z.enum(["0", "1"]).optional(),
   /** The viewer's time zone, for "today" on date fields without their own zone. */
   tz: z.string().refine(isValidTimeZone, "Unknown time zone").default("UTC"),
 });
@@ -38,12 +42,14 @@ export const GET = apiRoute(async (request, context: RouteContext<"/api/tables/[
 
   let filter = EMPTY_FILTER;
   let sorts: Sort[] = [];
+  let groupBy: string[] = [];
   if (query.viewId) {
     const found = getView(query.viewId);
     // A view of another table is "not found" here, not silently applied to the wrong table.
     if (!found || found.tableId !== table.id) throw notFound("View");
     filter = found.view.filter;
     sorts = found.view.sorts;
+    groupBy = (found.view.groupBy ?? []).map((group) => group.fieldId);
   }
   if (query.filter !== undefined) {
     const decoded = decodeFilterParam(query.filter);
@@ -63,10 +69,21 @@ export const GET = apiRoute(async (request, context: RouteContext<"/api/tables/[
     }
     sorts = decoded;
   }
+  if (query.group !== undefined) {
+    groupBy = query.group === "" ? [] : query.group.split(",");
+    if (groupBy.length > 2 || new Set(groupBy).size !== groupBy.length) throw invalid("group", "Group by at most two different fields");
+    for (const fieldId of groupBy) {
+      const field = table.fields.find((candidate) => candidate.id === fieldId);
+      if (!field) throw invalid("group", "Field no longer exists");
+      if (!isSortable(field)) throw invalid("group", "This field can't be grouped by");
+    }
+  }
 
   const result = queryRows(table, {
     filter,
     sorts,
+    groupBy,
+    withGroups: query.withGroups === "1",
     offset: query.offset,
     limit: query.limit,
     context: { now: now(), timeZone: query.tz },

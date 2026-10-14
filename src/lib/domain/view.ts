@@ -27,7 +27,11 @@ export const viewSchema = z.object({
   kind: z.enum(["grid", "form"]),
   filter: filterGroupSchema,
   sorts: sortsSchema,
-  groupBy: z.array(z.object({ fieldId: idSchema })).max(2).optional(),
+  groupBy: z
+    .array(z.object({ fieldId: idSchema }))
+    .max(2, "Group by at most two fields")
+    .refine((groups) => hasNoDuplicates(groups.map((group) => group.fieldId)), "A field can be grouped by only once")
+    .optional(),
   hiddenFieldIds: z.array(idSchema).refine(hasNoDuplicates, "Duplicate field"),
   fieldOrder: z.array(idSchema).refine(hasNoDuplicates, "Duplicate field"),
   columnWidths: z.record(idSchema, z.number().int().min(MIN_COLUMN_WIDTH).max(MAX_COLUMN_WIDTH)),
@@ -36,11 +40,11 @@ export const viewSchema = z.object({
 export type View = z.infer<typeof viewSchema>;
 
 /** The part of a view edited in the view panel (one RHF form): what rows are shown, and in what order. */
-export const viewQuerySchema = viewSchema.pick({ filter: true, sorts: true });
+export const viewQuerySchema = viewSchema.pick({ filter: true, sorts: true, groupBy: true });
 export type ViewQuery = z.infer<typeof viewQuerySchema>;
 
 /** Everything in a view that refers to fields, checked against the table on save. */
-export const viewConfigSchema = viewSchema.pick({ filter: true, sorts: true, hiddenFieldIds: true });
+export const viewConfigSchema = viewSchema.pick({ filter: true, sorts: true, groupBy: true, hiddenFieldIds: true });
 export type ViewConfig = z.infer<typeof viewConfigSchema>;
 
 /** Array-valued fields have no natural order, so they can't be sorted. */
@@ -55,6 +59,14 @@ function addQueryIssues(query: ViewQuery, fields: Field[], ctx: IssueContext) {
   for (const issue of filterFieldIssues(query.filter, fields)) {
     ctx.addIssue({ code: "custom", path: ["filter", ...issue.path], message: issue.message });
   }
+  query.groupBy?.forEach((group, i) => {
+    const field = fieldsById.get(group.fieldId);
+    if (!field) {
+      ctx.addIssue({ code: "custom", path: ["groupBy", i, "fieldId"], message: "Field no longer exists" });
+    } else if (!isSortable(field)) {
+      ctx.addIssue({ code: "custom", path: ["groupBy", i, "fieldId"], message: "This field can't be grouped by" });
+    }
+  });
   query.sorts.forEach((sort, i) => {
     const field = fieldsById.get(sort.fieldId);
     if (!field) {

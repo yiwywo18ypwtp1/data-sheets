@@ -55,6 +55,8 @@ export default async function ViewPage({ params, searchParams }: PageProps<"/b/[
   const initialWindow = queryRows(table, {
     filter: linkFilterValid ? linkFilter : view.filter,
     sorts: view.sorts,
+    groupBy: (view.groupBy ?? []).map((group) => group.fieldId),
+    withGroups: true,
     offset: 0,
     limit: INITIAL_WINDOW,
     context: { now: now(), timeZone: "UTC" },

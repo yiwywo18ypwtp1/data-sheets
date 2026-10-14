@@ -4,6 +4,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { RowWindowResponse } from "@/lib/domain/api";
+import type { CellValue } from "@/lib/domain/cell";
 import type { Field } from "@/lib/domain/field";
 import type { FilterGroup } from "@/lib/domain/filter";
 import type { Row } from "@/lib/domain/row";
@@ -18,6 +19,7 @@ import { GridHeader } from "./GridHeader";
 import { cellId, GridRow } from "./GridRow";
 import { GridStore } from "./GridStore";
 import { GridToolbar } from "./GridToolbar";
+import { GroupHeaderRow } from "./GroupHeaderRow";
 import { FOOTER_HEIGHT, gridColumns, GUTTER_WIDTH, HEADER_HEIGHT, moveField, ROW_HEIGHTS, setColumnWidth, setFieldHidden } from "./layout";
 import type { CellPosition } from "./selection";
 import { useCellEditing } from "./useCellEditing";
@@ -71,9 +73,9 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
   const [store] = useState(
     () =>
       new GridStore({
-        query: { filter: linkFilter ?? view.filter, sorts: view.sorts, timeZone: "UTC" },
+        query: { filter: linkFilter ?? view.filter, sorts: view.sorts, groupBy: (view.groupBy ?? []).map((group) => group.fieldId), timeZone: "UTC" },
         fields,
-        fetchWindow: (query, offset, limit, signal) => fetchRowWindow(tableId, query, offset, limit, signal),
+        fetchWindow: (query, offset, limit, signal, withGroups) => fetchRowWindow(tableId, query, offset, limit, signal, withGroups),
         sendBatch: (ops) => sendRowBatch(tableId, ops),
         initialWindow,
       }),
@@ -84,6 +86,7 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
   useEffect(() => store.setTimeZone(timeZone), [store, timeZone]);
 
   const total = useGridStore(store, (state) => state.total);
+  const layout = useGridStore(store, (state) => state.layout);
   const aggregates = useGridStore(store, (state) => state.aggregates);
   const activeCell = useGridStore(store, (state) => (state.selection ? `${state.selection.anchor.row}:${state.selection.anchor.col}` : null));
 
@@ -99,9 +102,10 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
   };
   const [panelStatus, setPanelStatus] = useState({ dirty: false, active: view.sorts.length, fieldIds: "" });
   const applyQuery = useCallback(
-    ({ filter, sorts }: ViewQuery) => {
-      if (JSON.stringify({ filter, sorts }) !== JSON.stringify({ filter: store.query.filter, sorts: store.query.sorts })) {
-        store.setQuery({ ...store.query, filter, sorts });
+    ({ filter, sorts, groupBy }: ViewQuery) => {
+      const next = { filter, sorts, groupBy: (groupBy ?? []).map((group) => group.fieldId) };
+      if (JSON.stringify(next) !== JSON.stringify({ filter: store.query.filter, sorts: store.query.sorts, groupBy: store.query.groupBy ?? [] })) {
+        store.setQuery({ ...store.query, ...next });
       }
     },
     [store],
@@ -115,10 +119,21 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
     [columns, locale, timeZone, store],
   );
 
+  /** "Status: Shipped" for a group header; the group field may be hidden, so it gets its own formatter. */
+  const groupTitle = (fieldId: string, key: CellValue) => {
+    const field = fields.find((candidate) => candidate.id === fieldId);
+    if (!field) return String(key ?? "");
+    // SQLite returns checkboxes as 1/0, and an unchecked box is stored as empty.
+    if (field.type === "checkbox") return `${field.name}: ${key === 1 || key === true ? "checked" : "not checked"}`;
+    const text = (formatters.get(fieldId) ?? createCellFormatter(field, { locale, timeZone, labelOf: store.getLabel }))(key);
+    return `${field.name}: ${text === "" ? "(empty)" : text}`;
+  };
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const rowHeight = ROW_HEIGHTS[view.rowHeight];
   const rowVirtualizer = useVirtualizer({
-    count: total,
+    // Rows on screen: with grouping, group headers and the rows of expanded groups (see groupLayout.ts).
+    count: layout.count,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => rowHeight,
     overscan: 8,
@@ -150,8 +165,9 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
   const firstIndex = virtualRows[0]?.index ?? 0;
   const lastIndex = virtualRows.at(-1)?.index ?? 0;
   useEffect(() => {
-    store.ensureRange(firstIndex, lastIndex);
-  }, [store, firstIndex, lastIndex]);
+    const range = layout.serverRange(firstIndex, lastIndex);
+    if (range) store.ensureRange(range.first, range.last);
+  }, [store, layout, firstIndex, lastIndex]);
 
   // Plain functions: they're only called from event handlers, so stable identities buy nothing.
   const getBounds = () => {
@@ -160,7 +176,12 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
   };
 
   const scrollToCell = (cell: CellPosition) => {
-    rowVirtualizer.scrollToIndex(cell.row, { align: "auto" });
+    // A row inside a collapsed group is shown first (its groups expand), then scrolled to.
+    const revealed = store.revealRow(cell.row);
+    const display = store.layout.displayIndexOf(cell.row);
+    // After expanding, wait a frame for the virtualizer to know the new row count.
+    if (display !== null && revealed) requestAnimationFrame(() => rowVirtualizer.scrollToIndex(display, { align: "auto" }));
+    else if (display !== null) rowVirtualizer.scrollToIndex(display, { align: "auto" });
     // Column 0 is pinned, so it's always visible, but reaching it (Cmd+Home, Home) should
     // still bring the table back to its start, as in Excel.
     if (cell.col === 0) columnVirtualizer.scrollToOffset(0);
@@ -269,7 +290,7 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
         role="grid"
         tabIndex={0}
         aria-label={`${tableName} records`}
-        aria-rowcount={total + 2}
+        aria-rowcount={layout.count + 2}
         aria-colcount={columns.length}
         aria-multiselectable
         aria-activedescendant={activeCell ? cellId(idPrefix, activeRow, activeCol) : undefined}
@@ -306,22 +327,15 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
             />
             {/* Takes the rows' space in normal flow, so the sticky footer sits after them. */}
             <div style={{ height: Math.max(0, height - HEADER_HEIGHT - FOOTER_HEIGHT) }} />
-            {virtualRows.map((virtualRow) => (
-              <GridRow
-                key={virtualRow.key}
-                store={store}
-                idPrefix={idPrefix}
-                index={virtualRow.index}
-                top={virtualRow.start}
-                height={virtualRow.size}
-                width={width}
-                pinned={pinned}
-                scrollable={scrollable}
-                virtualColumns={virtualColumns}
-                formatters={formatters}
-                canFill={canEdit}
-              />
-            ))}
+            {virtualRows.map((virtualRow) => {
+              const item = layout.itemAt(virtualRow.index);
+              if (!item) return null;
+              const shared = { store, top: virtualRow.start, height: virtualRow.size, width, pinned, scrollable, virtualColumns, formatters, displayIndex: virtualRow.index };
+              if (item.kind === "group") {
+                return <GroupHeaderRow key={virtualRow.key} {...shared} group={item.group} path={item.path} collapsed={item.collapsed} title={groupTitle(item.group.fieldId, item.group.key)} />;
+              }
+              return <GridRow key={virtualRow.key} {...shared} idPrefix={idPrefix} index={item.index} canFill={canEdit} />;
+            })}
             <GridFooter
               locale={locale}
               total={total}

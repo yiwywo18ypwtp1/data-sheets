@@ -20,6 +20,8 @@ type GridRowProps = {
   scrollable: GridColumn[];
   virtualColumns: VirtualItem[];
   formatters: Map<string, CellFormatter>;
+  /** Position on screen (differs from `index` when the view is grouped), for aria-rowindex. */
+  displayIndex: number;
   /** Show the fill handle on the selection's bottom-right cell. */
   canFill: boolean;
 };
@@ -64,7 +66,7 @@ function Placeholder() {
  * all their cells would re-render each frame although their props didn't change.
  * With `memo`, vertical scrolling only mounts the rows that come into view.
  */
-export const GridRow = memo(function GridRow({ store, idPrefix, index, top, height, width, pinned, scrollable, virtualColumns, formatters, canFill }: GridRowProps) {
+export const GridRow = memo(function GridRow({ store, idPrefix, index, top, height, width, pinned, scrollable, virtualColumns, formatters, canFill, displayIndex }: GridRowProps) {
   const row = useGridStore(store, (state) => state.getRowAt(index));
   const status = useGridStore(store, (state) => state.getRowStatus(index));
   const selection = parseRowSelectionKey(useGridStore(store, (state) => state.getRowSelectionKey(index)));
@@ -118,7 +120,7 @@ export const GridRow = memo(function GridRow({ store, idPrefix, index, top, heig
   return (
     <div
       role="row"
-      aria-rowindex={index + 2}
+      aria-rowindex={displayIndex + 2}
       aria-busy={status === "loading" || undefined}
       // A row being deleted stays visible, dimmed and struck through, until the server confirms.
       className={`absolute left-0 flex border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950 ${row?.deleting ? "line-through opacity-40" : ""}`}

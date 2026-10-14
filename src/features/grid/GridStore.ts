@@ -1,4 +1,4 @@
-import type { Aggregates, RowWindowResponse } from "@/lib/domain/api";
+import type { Aggregates, RowGroup, RowWindowResponse } from "@/lib/domain/api";
 import type { CellValue } from "@/lib/domain/cell";
 import { isComputedField, type Field } from "@/lib/domain/field";
 import { usesRelativeDates } from "@/lib/domain/filter";
@@ -6,6 +6,7 @@ import { newId } from "@/lib/domain/ids";
 import { MAX_BATCH_OPS, type Row, type RowOp, type RowOpResult } from "@/lib/domain/row";
 import type { RowQuery } from "./api";
 import { History, type DeletedRow, type HistoryChange, type HistoryEntry } from "./history";
+import { GroupLayout } from "./groupLayout";
 import { buildFormulaContext, displayRow, type DisplayRow, type FormulaContext, type PendingEdit } from "./optimistic";
 import type { PresenceEntry, RowChange } from "./realtime";
 import { rangeOf, rowSelectionKey, type Selection } from "./selection";
@@ -42,7 +43,7 @@ function isTransient(error: unknown): boolean {
   return status === null || status >= 500;
 }
 
-export type FetchWindow = (query: RowQuery, offset: number, limit: number, signal: AbortSignal) => Promise<RowWindowResponse>;
+export type FetchWindow = (query: RowQuery, offset: number, limit: number, signal: AbortSignal, withGroups?: boolean) => Promise<RowWindowResponse>;
 export type SendBatch = (ops: RowOp[]) => Promise<RowOpResult[]>;
 
 type Block =
@@ -99,6 +100,13 @@ export class GridStore {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private retryDelay = 0;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The grouped view's groups (null: not grouped, or not loaded yet), and which are collapsed. */
+  private groups: RowGroup[] | null = null;
+  /** The rows changed: the groups are asked for again with the next window, the old ones stay shown meanwhile. */
+  private groupsStale = false;
+  private collapsed = new Set<string>();
+  private layoutCache: { key: string; layout: GroupLayout } | null = null;
+  private groupsVersion = 0;
   /** Other tabs' selected cells, by row id. */
   private presenceByRow = new Map<string, { fieldId: string; color: string; name: string }[]>();
 
@@ -148,6 +156,34 @@ export class GridStore {
 
   get total(): number {
     return this.serverTotal + this.localRows.length;
+  }
+
+  /** What's on screen, row by row: group headers and rows (see groupLayout.ts). A stable object until it changes. */
+  get layout(): GroupLayout {
+    const key = `${this.groupsVersion}:${this.total}:${[...this.collapsed].join("|")}`;
+    if (this.layoutCache?.key !== key) {
+      const grouped = (this.query.groupBy?.length ?? 0) > 0 ? this.groups : null;
+      this.layoutCache = { key, layout: new GroupLayout(grouped, this.total, this.collapsed) };
+    }
+    return this.layoutCache.layout;
+  }
+
+  toggleGroup(path: string): void {
+    if (!this.collapsed.delete(path)) this.collapsed.add(path);
+    this.notify();
+  }
+
+  /** Expands the groups around a row (keyboard navigation or undo went into a collapsed group). */
+  revealRow(index: number): boolean {
+    const hidden = this.layout.pathsContaining(index).filter((path) => this.collapsed.has(path));
+    if (hidden.length === 0) return false;
+    for (const path of hidden) this.collapsed.delete(path);
+    this.notify();
+    return true;
+  }
+
+  private get wantsGroups(): boolean {
+    return (this.query.groupBy?.length ?? 0) > 0 && (this.groups === null || this.groupsStale);
   }
 
   private isLocalIndex(index: number): boolean {
@@ -551,10 +587,11 @@ export class GridStore {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = null;
+      this.groupsStale = true;
       const generation = this.generation;
       for (const [index, block] of this.blocks) {
         if (block.status !== "ready") continue;
-        this.fetchWindow(this.query, index * BLOCK_SIZE, BLOCK_SIZE, new AbortController().signal).then(
+        this.fetchWindow(this.query, index * BLOCK_SIZE, BLOCK_SIZE, new AbortController().signal, this.wantsGroups).then(
           (response) => {
             if (generation !== this.generation || this.blocks.get(index)?.status !== "ready") return;
             this.applyWindow(index, response);
@@ -619,6 +656,8 @@ export class GridStore {
     this.labels.clear();
     this.localRows = [];
     this.query = query;
+    this.groups = null;
+    this.groupsVersion++;
     // Row positions mean something else in the new result, so the old selection would point at other rows.
     this.selection = null;
     this.editing = null;
@@ -631,6 +670,7 @@ export class GridStore {
    * until the new data arrives. The selection is cleared: positions may have shifted.
    */
   reload(): void {
+    this.groupsStale = true;
     this.generation++;
     this.abortAll();
     this.blocks.clear();
@@ -721,7 +761,7 @@ export class GridStore {
     };
 
     try {
-      const response = await this.fetchWindow(this.query, index * BLOCK_SIZE, BLOCK_SIZE, controller.signal);
+      const response = await this.fetchWindow(this.query, index * BLOCK_SIZE, BLOCK_SIZE, controller.signal, this.wantsGroups);
       if (!isCurrent()) return;
       this.applyWindow(index, response);
     } catch (error) {
@@ -732,6 +772,11 @@ export class GridStore {
   }
 
   private applyWindow(blockIndex: number, response: RowWindowResponse) {
+    if (response.groups) {
+      this.groups = response.groups;
+      this.groupsStale = false;
+      this.groupsVersion++;
+    }
     for (const row of response.rows) {
       this.rows.set(row.id, row);
       // Re-apply edits still waiting for the server on top of the fresh row.

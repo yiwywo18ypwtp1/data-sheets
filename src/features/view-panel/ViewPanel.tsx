@@ -10,6 +10,7 @@ import { viewQuerySchemaFor, type View, type ViewQuery } from "@/lib/domain/view
 import { ApiRequestError } from "@/features/grid/api";
 import { FilterFields, type FilterContext } from "./FilterFields";
 import { smallButtonClass } from "./inputs";
+import { GroupFields } from "./GroupFields";
 import { SortFields } from "./SortFields";
 
 /** Typing in a condition waits this long before the grid refetches. */
@@ -32,7 +33,7 @@ type ViewPanelProps = {
   labelOf: FilterContext["labelOf"];
 };
 
-const pick = (view: View): ViewQuery => ({ filter: view.filter, sorts: view.sorts });
+const pick = (view: View): ViewQuery => ({ filter: view.filter, sorts: view.sorts, groupBy: view.groupBy ?? [] });
 
 /**
  * Keeps `?filter=` in the address bar equal to the applied filter while it differs from
@@ -49,7 +50,7 @@ function syncFilterParam(filter: FilterGroup, savedFilterKey: string) {
 /** Conditions and sorts that actually affect the grid, for the toolbar button. */
 function activeCount(query: ViewQuery): number {
   const conditions = [...query.filter.conditions, ...query.filter.groups.flatMap((group) => group.conditions)];
-  return conditions.filter(isConditionComplete).length + query.sorts.length;
+  return conditions.filter(isConditionComplete).length + query.sorts.length + (query.groupBy?.length ?? 0);
 }
 
 /**
@@ -93,7 +94,7 @@ export function ViewPanel({ open, fields, saved, save, onApply, onStatusChange, 
 
   const draft = form.getValues();
   const active = activeCount(draft);
-  const fieldIds = [...draft.filter.conditions, ...draft.filter.groups.flatMap((group) => group.conditions), ...draft.sorts].map((item) => item.fieldId).join(",");
+  const fieldIds = [...draft.filter.conditions, ...draft.filter.groups.flatMap((group) => group.conditions), ...draft.sorts, ...(draft.groupBy ?? [])].map((item) => item.fieldId).join(",");
   useEffect(() => onStatusChange({ dirty: isDirty, active, fieldIds }), [isDirty, active, fieldIds, onStatusChange]);
 
   const submit = form.handleSubmit(async (query) => {
@@ -155,6 +156,7 @@ export function ViewPanel({ open, fields, saved, save, onApply, onStatusChange, 
         <div hidden={!open} className="flex max-h-[45vh] flex-wrap gap-x-10 gap-y-4 overflow-auto">
           <FilterFields context={{ fields, labelOf }} />
           <SortFields fields={fields} />
+          <GroupFields fields={fields} />
         </div>
         {actions}
       </form>

@@ -52,14 +52,17 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export type RowQuery = { filter: FilterGroup; sorts: Sort[]; timeZone: string };
+export type RowQuery = { filter: FilterGroup; sorts: Sort[]; timeZone: string; groupBy?: string[] };
 
-export function fetchRowWindow(tableId: string, query: RowQuery, offset: number, limit: number, signal: AbortSignal) {
+/** `withGroups`: also return the grouped view's structure (the grid asks until it has it). */
+export function fetchRowWindow(tableId: string, query: RowQuery, offset: number, limit: number, signal: AbortSignal, withGroups = false) {
   const params = new URLSearchParams({
     offset: String(offset),
     limit: String(limit),
     filter: encodeFilterParam(query.filter),
     sort: encodeSortParam(query.sorts),
+    group: (query.groupBy ?? []).join(","),
+    withGroups: withGroups ? "1" : "0",
     tz: query.timeZone,
   });
   return request<RowWindowResponse>(`/api/tables/${tableId}/rows?${params}`, { signal });
