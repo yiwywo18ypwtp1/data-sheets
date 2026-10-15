@@ -1,6 +1,6 @@
 # Data Sheets
 
-A simplified Airtable: typed columns, an editable virtualized grid over 50 000 rows, formulas with a dependency graph, saved views and a CSV import wizard. Built with Next.js 16 (App Router), React 19, TypeScript strict and SQLite. The task statement is in [frontend-task-data-sheets.md](frontend-task-data-sheets.md); design decisions and measurements are in [ARCHITECTURE.md](ARCHITECTURE.md).
+A simplified Airtable: typed columns, an editable virtualized grid over 50 000 rows, formulas with a dependency graph, saved views and a CSV import wizard. Built with Next.js 16 (App Router), React 19, TypeScript strict and SQLite. Design decisions and measurements are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 **Scope: Core, Advanced and Bonus** (kanban, cell history, streamed CSV export, offline mode, comments with mentions). The limitations are listed [at the end](#not-done).
 
@@ -28,6 +28,7 @@ Users are switched on **/settings** (a cookie): Cora Creator (creator, the defau
 | `MOCK_LATENCY_MS` | `0` | Delay added to every `/api` request |
 | `MOCK_FAILURE_RATE` | `0` | Share (0–1) of `/api` requests that fail with 503 `MOCK_FAILURE` |
 | `MOCK_NOW` | real clock | Pins "now" for `TODAY()` and "today" filters (ISO date-time) |
+| `TRUSTED_PROXY_HOPS` | `0` | Reverse proxies in front of the server that append the peer's address to `X-Forwarded-For`; the public form's per-client rate limit uses that entry. With `0` the header is ignored (a client writes it itself) and all guests share one limit per form |
 | `REALTIME_DROP_RATE` | `0` | Share (0–1) of live realtime events the server drops; clients notice the gap and get them replayed |
 
 ### Scripts
@@ -93,7 +94,7 @@ npm run lint
 
 - In a table, "+" next to the view tabs → Form. The form view shows its settings: title, description, questions (add, ↑/↓, required, hint) and "show only if" an earlier checkbox or select answer is one of some values. Save, then "Open the form ↗" (`/f/<viewId>`; anyone with the link can answer).
 - The public page is cached and refreshed when the view or the table's fields change. Answers are checked with a zod schema built from the questions on the page and again in the Server Action.
-- A double click (try `MOCK_LATENCY_MS=3000`) creates one record: every submission carries an id chosen when the form opens. Change the table's fields while a guest is filling the form: their submit is refused with an explanation, the form reloads, and their answers stay. A hidden honeypot field and a limit of 5 submissions per minute per IP keep simple spam out. `POST /api/forms/:viewId` does the same for API clients.
+- A double click (try `MOCK_LATENCY_MS=3000`) creates one record: every submission carries an id chosen when the form opens. Change the table's fields while a guest is filling the form: their submit is refused with an explanation, the form reloads, and their answers stay. A hidden honeypot field and a limit of 5 submissions per minute per client (and 60 per form, which a forged `X-Forwarded-For` can't get around) keep simple spam out. `POST /api/forms/:viewId` does the same for API clients.
 
 ### Edge cases from section 8
 
@@ -133,4 +134,4 @@ Known limitations:
 - Undo of a deletion restores the records, but not links to them from other tables.
 - `TODAY()` is evaluated in UTC, and refreshed by the first read of the table's base each UTC day (and on every write), not on a timer: a server that nobody reads doesn't refresh, and open grids pick the new values up on their next reload.
 - Offset windows: after an edit that moves a row in the current sort (or a row added by someone), a row can repeat or be skipped at a block boundary until the windows reload.
-- Realtime presence and rate limits live in the server's memory (one process), as a mock would.
+- Realtime presence and rate limits live in the server's memory (one process), as a mock would; the rate limiter forgets expired clients and holds at most 10 000 keys. Node gives route handlers no peer address, so without `TRUSTED_PROXY_HOPS` the public form can only limit per form, not per guest.

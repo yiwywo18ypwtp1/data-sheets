@@ -87,31 +87,69 @@ export type SubmitResult =
   | { ok: true; message: string }
   | { ok: false; code: "INVALID" | "CHANGED" | "GONE" | "RATE_LIMITED" | "UNAVAILABLE"; message: string; fieldErrors?: Record<string, string> };
 
-const RATE_LIMIT = { submissions: 5, windowMs: 60_000 };
+/**
+ * At most 5 submissions per minute per client and form, and 60 per minute per form whatever
+ * the clients claim to be: the second limit is what a spoofed address can't get around.
+ */
+const RATE_LIMIT = { perClient: 5, perForm: 60, windowMs: 60_000, maxKeys: 10_000 };
 // On globalThis: the Server Action and the API route are separate bundles (see rows.ts).
-const shared = globalThis as unknown as { formRateLimit?: Map<string, number[]> };
-shared.formRateLimit ??= new Map();
-const recent = shared.formRateLimit;
+const shared = globalThis as unknown as { formRateLimit?: { hits: Map<string, number[]>; sweptAt: number } };
+shared.formRateLimit ??= { hits: new Map(), sweptAt: 0 };
+const limiter = shared.formRateLimit;
 
-/** At most 5 submissions per minute per IP and form (the mock's spam protection). */
-function rateLimited(key: string): boolean {
-  const cutoff = Date.now() - RATE_LIMIT.windowMs;
-  const times = (recent.get(key) ?? []).filter((time) => time > cutoff);
-  if (times.length >= RATE_LIMIT.submissions) {
-    recent.set(key, times);
-    return true;
+/**
+ * Who is submitting, as far as the server can tell. Node doesn't give a Route Handler or a
+ * Server Action the socket's address, and `X-Forwarded-For` is whatever the client wrote
+ * (Next.js only fills it in when it's missing), so it is not believed by default: everyone
+ * is "direct" and shares the per-form limits. Behind a reverse proxy that appends the
+ * peer's address, `TRUSTED_PROXY_HOPS=1` takes the entry that proxy added: the last one,
+ * counted from the right, which the client can't write (the ones before it are theirs).
+ */
+export function clientKeyOf(headers: Headers): string {
+  const hops = Math.trunc(Number(process.env.TRUSTED_PROXY_HOPS ?? 0));
+  if (!(hops > 0)) return "direct";
+  const entries = (headers.get("x-forwarded-for") ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
+  return entries.at(-hops)?.slice(0, 64) ?? "direct";
+}
+
+/** Drops keys whose hits have all left the window, and the oldest keys beyond `maxKeys`. Runs at most once a window. */
+function sweep(time: number): void {
+  if (time - limiter.sweptAt < RATE_LIMIT.windowMs) return;
+  limiter.sweptAt = time;
+  const cutoff = time - RATE_LIMIT.windowMs;
+  for (const [key, times] of limiter.hits) if (times[times.length - 1] <= cutoff) limiter.hits.delete(key);
+}
+
+function recentHits(key: string, cutoff: number): number[] {
+  return (limiter.hits.get(key) ?? []).filter((time) => time > cutoff);
+}
+
+/** Counts one submission, unless it is over a limit. Re-inserting a key keeps the map in order of recency. */
+function rateLimited(clientKey: string, viewId: string): boolean {
+  const time = Date.now();
+  sweep(time);
+  const cutoff = time - RATE_LIMIT.windowMs;
+  const clientHits = `client:${clientKey}:${viewId}`;
+  const formHits = `form:${viewId}`;
+  const client = recentHits(clientHits, cutoff);
+  const form = recentHits(formHits, cutoff);
+  if (client.length >= RATE_LIMIT.perClient || form.length >= RATE_LIMIT.perForm) return true;
+  for (const [key, times] of [[clientHits, client], [formHits, form]] as const) {
+    limiter.hits.delete(key);
+    limiter.hits.set(key, [...times, time]);
   }
-  recent.set(key, [...times, Date.now()]);
+  while (limiter.hits.size > RATE_LIMIT.maxKeys) limiter.hits.delete(limiter.hits.keys().next().value!);
   return false;
 }
 
 /**
  * A guest's answers to a public form become a record. Checked in this order: the honeypot
  * (a bot gets a fake success), the idempotency key (a repeated submit gets the first
- * result), the rate limit, the form still existing and unchanged, then the answers against
+ * result), the form still existing (so made-up ids don't fill the rate limiter), the rate
+ * limit, the form being unchanged, then the answers against
  * the form's runtime schema. The record and the key are written in one transaction.
  */
-export function submitForm(viewId: string, input: unknown, ip: string): SubmitResult {
+export function submitForm(viewId: string, input: unknown, clientKey: string): SubmitResult {
   const parsed = submissionSchema.safeParse(input);
   if (!parsed.success) return { ok: false, code: "INVALID", message: "The submission is malformed" };
   const submission = parsed.data;
@@ -121,8 +159,8 @@ export function submitForm(viewId: string, input: unknown, ip: string): SubmitRe
 
   const db = getDb();
   if (db.prepare("SELECT 1 FROM form_submissions WHERE key = ? AND view_id = ?").get(submission.submissionId, viewId)) return { ok: true, message: thanks };
-  if (rateLimited(`${ip}:${viewId}`)) return { ok: false, code: "RATE_LIMITED", message: "Too many submissions from your network; try again in a minute." };
   if (!definition) return { ok: false, code: "GONE", message: "This form no longer exists." };
+  if (rateLimited(clientKey, viewId)) return { ok: false, code: "RATE_LIMITED", message: "Too many submissions; try again in a minute." };
   if (submission.version !== definition.version) {
     return { ok: false, code: "CHANGED", message: "The form was changed while you were filling it in. Please check your answers and send it again." };
   }

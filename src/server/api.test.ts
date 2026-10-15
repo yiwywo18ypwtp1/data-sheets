@@ -357,6 +357,15 @@ describe("POST /api/tables/:id/import", () => {
 });
 
 describe("public forms", () => {
+  // The tests play a reverse proxy that appends the peer's address (see clientKeyOf).
+  beforeEach(() => {
+    process.env.TRUSTED_PROXY_HOPS = "1";
+  });
+  afterEach(() => {
+    delete process.env.TRUSTED_PROXY_HOPS;
+    vi.useRealTimers();
+  });
+
   async function createForm() {
     const response = await viewsRoute.POST(send("POST", "/api/tables/tbl_customers/views", { name: "Signup", kind: "form" }), params({ id: "tbl_customers" }));
     expect(response.status).toBe(201);
@@ -396,6 +405,37 @@ describe("public forms", () => {
     for (let i = 0; i < 6; i++) statuses.push((await submit(viewId, { submissionId: `sub_rate${i}`, version, answers: {} }, "10.0.0.3")).status);
     expect(statuses).toEqual([201, 201, 201, 201, 201, 429]);
     expect((await submit("viw_customers_all", { submissionId: "sub_grid", version, answers: {} }, "10.0.0.4")).status).toBe(404);
+  });
+
+  it("can't be talked out of its limit with a forged X-Forwarded-For", async () => {
+    const viewId = await createForm();
+    const { version } = formDefinition(viewId)!;
+    // The client writes the left entries; the proxy appends the real address on the right.
+    const statuses = [];
+    for (let i = 0; i < 6; i++) statuses.push((await submit(viewId, { submissionId: `sub_spoof${i}`, version, answers: {} }, `1.1.1.${i}, 10.0.0.5`)).status);
+    expect(statuses).toEqual([201, 201, 201, 201, 201, 429]);
+
+    // Without a trusted proxy the header isn't believed at all: every guest shares one limit...
+    delete process.env.TRUSTED_PROXY_HOPS;
+    const direct = [];
+    for (let i = 0; i < 6; i++) direct.push((await submit(viewId, { submissionId: `sub_direct${i}`, version, answers: {} }, `2.2.2.${i}`)).status);
+    expect(direct).toEqual([201, 201, 201, 201, 201, 429]);
+  });
+
+  it("caps a form per minute across all clients, and forgets old clients", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const viewId = await createForm();
+    const { version } = formDefinition(viewId)!;
+    const statuses = [];
+    for (let i = 0; i < 61; i++) statuses.push((await submit(viewId, { submissionId: `sub_wide${i}`, version, answers: {} }, `10.1.${i >> 8}.${i & 255}`)).status);
+    expect(statuses.slice(0, 60).every((status) => status === 201)).toBe(true);
+    expect(statuses[60]).toBe(429);
+
+    // A minute later the window has passed, and the next request clears out what expired.
+    vi.setSystemTime(Date.now() + 61_000);
+    expect((await submit(viewId, { submissionId: "sub_later", version, answers: {} }, "10.9.9.9")).status).toBe(201);
+    const hits = (globalThis as unknown as { formRateLimit: { hits: Map<string, number[]> } }).formRateLimit.hits;
+    expect([...hits.keys()].filter((key) => key.includes(viewId))).toHaveLength(2);
   });
 });
 
