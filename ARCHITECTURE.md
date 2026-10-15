@@ -62,6 +62,10 @@ Server-side shared state (DB, result cache, realtime bus, rate limits) lives on 
 - **Conflicts.** Last write wins **per cell**: ops carry only changed cells, so different cells of one row merge. Each tab remembers the value and `rev` of its last confirmed write per cell; an event with a newer `rev` and another value there means this tab lost, and it shows a toast with both values and "Keep mine".
 - **Presence.** Tabs post their active cell (debounced + heartbeat); it's kept in memory and pushed on the stream, shown as avatars and coloured frames.
 
+## Offline
+
+Three pieces, all per user. A service worker (`public/sw.js`) serves the pages of tables opened before and caches `/_next/static`; row windows and kanban boards are copied into IndexedDB after each answer and used only when the request fails without one; unsent edits go to an IndexedDB outbox, one record per open grid, held by a Web Lock so a later grid can tell a closed tab's record from an open one and adopt it. Identity is the mock cookie, which the worker can't read (it is HttpOnly), so: the proxy stamps each page response with `x-ds-user`; the page files its copy under that user; an open page tells the worker who is current (`postMessage`), and the worker serves only that user's copies and deletes the rest. Outbox records and row copies carry `userId` and are matched on it; a grid never adopts another user's queue, and `forgetOtherUsers` deletes other users' row copies on load. Writes name the user the page was opened for (`x-acting-user`) and the server refuses them (409 `USER_CHANGED`) if the cookie now says someone else, which covers a page left open in a tab across a switch.
+
 ## Performance: how it was measured
 
 Apple M1, Node 22, `next build && next start`, 50 000-row seed, headless Chrome via `playwright-core`: a `requestAnimationFrame` loop scrolling the grid plus `PerformanceObserver('longtask')`; server timings with curl. On battery Chrome caps frames at 30 Hz, so frame work was measured with `--disable-frame-rate-limit --disable-gpu-vsync`.
@@ -76,7 +80,7 @@ Apple M1, Node 22, `next build && next start`, 50 000-row seed, headless Chrome 
 
 ## Tests
 
-Vitest: pure logic and the API through its route handlers against an in-memory seed, in two time zones; React Testing Library: grid keyboard and editing, the filter tree, import mapping; Playwright (production build, fresh DB): saved view after reload, paste with one-step undo/redo, import with fixed and skipped errors, two tabs merging and conflicting.
+Vitest: pure logic and the API through its route handlers against an in-memory seed, in two time zones; React Testing Library: grid keyboard and editing, the filter tree, import mapping; Playwright (production build, fresh DB): saved view after reload, paste with one-step undo/redo, import with fixed and skipped errors, two tabs merging and conflicting; kanban moves (drag, keyboard, undo, add), a comment with an @mention reaching another user live, and the offline mode including the user switch.
 
 ## Rejected alternatives
 

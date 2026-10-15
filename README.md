@@ -36,7 +36,7 @@ Users are switched on **/settings** (a cookie): Cora Creator (creator, the defau
 ```bash
 npm test            # unit, API and component (React Testing Library) tests, Vitest, ~3 s
 npm run test:tz     # the same in Pacific/Auckland and America/Los_Angeles (both always run)
-npm run test:e2e    # Playwright: builds, starts on :3100 with a fresh database, runs the 4 scenarios
+npm run test:e2e    # Playwright: builds, starts on :3100 with a fresh database, runs the 10 scenarios (core, advanced, and the Bonus kanban, comments and offline mode)
                     # (uses the installed Google Chrome; or `npx playwright install chromium` and drop `channel`)
 npm run typecheck   # next typegen + tsc --noEmit
 npm run lint
@@ -123,7 +123,7 @@ npm run lint
 
 ## Not done
 
-- **Bonus** is implemented but has no Playwright scenarios, and the offline mode (service worker, IndexedDB outbox and row copies) was only unit-tested, not driven in a browser. Offline works for tables opened before; unsent edits are taken over by the next tab through Web Locks.
+- **Bonus** has Playwright scenarios for the kanban (drag, Alt+arrows, undo, add, read-only for a viewer), comments with mentions (live badge, inbox, delete) and the offline mode (queue, reload from the service worker's copy, sending on reconnect, user switch). Not covered in a browser: the kanban's "Show more" paging and the history/restore tab (unit and API tests only). Offline works for tables opened before. Offline data belongs to the user it was made for: unsent edits are taken over only by a grid of the same user (they wait for their user after a switch), row copies and cached pages of other users are deleted, and a page left open across a switch has its writes refused (409 `USER_CHANGED`) instead of saved under the new name. Edits queued by the first offline build (IndexedDB version 1) were not attributed to anyone and are dropped on upgrade.
 
 Known limitations:
 - Footer sums update on the next window load, not on every edit.
