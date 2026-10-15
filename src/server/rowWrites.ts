@@ -350,7 +350,7 @@ export function applyRowBatch(table: { id: string; baseId: string }, ops: RowOp[
  * so a lookup in Orders that reads a Customers formula sees the new formula values.
  * Returns the tables whose rows changed.
  */
-export function recomputeAllRows(baseId: string, fieldIds: string[]): string[] {
+export function recomputeAllRows(baseId: string, fieldIds: string[], options: { clock?: boolean } = {}): string[] {
   const db = getDb();
   const batch = new BatchContext(baseId);
   const affected = new Set([...fieldIds, ...dependentsOf(batch.graph, new Set(fieldIds))]);
@@ -369,15 +369,56 @@ export function recomputeAllRows(baseId: string, fieldIds: string[]): string[] {
 
   db.transaction(() => {
     const update = db.prepare("UPDATE rows SET cells = ?, errors = ?, rev = rev + 1, updated_at = ? WHERE id = ?");
+    const setComputed = db.prepare("UPDATE rows SET cells = ?, errors = ? WHERE id = ?");
     for (const run of runs) {
       const records = db.prepare("SELECT * FROM rows WHERE table_id = ?").all(run.tableId) as RowRecord[];
       for (const record of records) {
         const row = toRow(record);
         const computed = computeFields(run.fieldIds, { values: row.values, errors: row.errors ?? {} }, batch.fields, batch.formulas, readLinked, batch.evalContext);
-        update.run(serializeCells(computed.values), serializeErrors(computed.errors), batch.timestamp, record.id);
+        const cells = serializeCells(computed.values);
+        const errors = serializeErrors(computed.errors);
+        if (options.clock) {
+          // The clock moved, not the record: no new revision (a queued edit made against the old one
+          // is not a conflict) and no write for rows whose results are the same.
+          if (cells !== record.cells || errors !== record.errors) setComputed.run(cells, errors, record.id);
+        } else {
+          update.run(cells, errors, batch.timestamp, record.id);
+        }
       }
       markRowsChanged(run.tableId);
     }
   })();
   return [...new Set(runs.map((run) => run.tableId))];
+}
+
+// On globalThis, like the row cache: the page, the API routes and Server Actions are separate bundles.
+const sharedClock = globalThis as unknown as { clockRefreshedOn?: Map<string, string> };
+sharedClock.clockRefreshedOn ??= new Map();
+const refreshedOn = sharedClock.clockRefreshedOn;
+
+/**
+ * Formula results are stored, so a formula with `TODAY()` ("days until the deadline") and a
+ * filter on it would show yesterday's values after midnight. Before a table's rows are read,
+ * the first read of each (UTC) day recomputes the clock-dependent formulas of its base, and
+ * the formulas that read them, in every row. `TODAY()` is evaluated in UTC (see BatchContext),
+ * so the day changes at 00:00 UTC. Rows are rewritten only if a result changed.
+ */
+export function refreshClockFormulas(tableId: string): void {
+  const table = getDb().prepare("SELECT base_id FROM tables WHERE id = ?").get(tableId) as { base_id: string } | undefined;
+  if (!table) return;
+  const today = now().toISOString().slice(0, 10);
+  if (refreshedOn.get(table.base_id) === today) return;
+
+  const batch = new BatchContext(table.base_id);
+  const volatileIds = [...batch.fields.values()].filter((field) => {
+    if (field.type !== "formula") return false;
+    const formula = batch.formulas.get(field);
+    return "ast" in formula && formula.volatile;
+  });
+  if (volatileIds.length > 0) {
+    const changed = recomputeAllRows(table.base_id, volatileIds.map((field) => field.id), { clock: true });
+    // Open grids and boards load the new values with their next reload.
+    for (const id of changed) appendEvent(id, { kind: "reload", origin: SYSTEM_ORIGIN });
+  }
+  refreshedOn.set(table.base_id, today);
 }

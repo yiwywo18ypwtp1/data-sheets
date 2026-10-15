@@ -1,7 +1,12 @@
 import type { Field, FormulaResultType } from "@/lib/domain/field";
-import { FUNCTIONS, type ValueType } from "./functions";
+import { parseDateUnit, parseStoredDate } from "./dates";
+import { FUNCTIONS, type ParamKind, type ValueType } from "./functions";
 import { FormulaSyntaxError } from "./lexer";
 import { parse, type Node } from "./parser";
+import { isFormulaError, toNumber } from "./values";
+
+type BinaryNode = Extract<Node, { kind: "binary" }>;
+type Checked = { node: Node; type: ValueType };
 
 export type CompiledFormula = {
   /** AST whose field nodes hold field ids, whatever form the source expression used. */
@@ -9,6 +14,8 @@ export type CompiledFormula = {
   /** Fields this formula reads directly. Edges of the dependency graph. */
   fieldIds: string[];
   resultType: FormulaResultType;
+  /** Calls TODAY(), directly or in a sub-expression: the result changes with the clock. */
+  volatile: boolean;
 };
 
 /**
@@ -18,8 +25,9 @@ export type CompiledFormula = {
  */
 export function compileFormula(expression: string, resolveField: (ref: string) => Field | undefined): CompiledFormula {
   const fieldIds = new Set<string>();
+  let volatile = false;
 
-  function check(node: Node): { node: Node; type: ValueType } {
+  function check(node: Node): Checked {
     switch (node.kind) {
       case "number":
         return { node, type: "number" };
@@ -40,28 +48,12 @@ export function compileFormula(expression: string, resolveField: (ref: string) =
 
       case "negate": {
         const operand = check(node.operand);
-        rejectDate(operand.type, node.operand.start);
+        expectKind("number", operand, node.operand);
         return { node: { ...node, operand: operand.node }, type: "number" };
       }
 
-      case "binary": {
-        const left = check(node.left);
-        const right = check(node.right);
-        const checked = { ...node, left: left.node, right: right.node };
-        switch (node.operator) {
-          case "+":
-          case "-":
-          case "*":
-          case "/":
-            rejectDate(left.type, node.left.start);
-            rejectDate(right.type, node.right.start);
-            return { node: checked, type: "number" };
-          case "&":
-            return { node: checked, type: "text" };
-          default:
-            return { node: checked, type: "checkbox" };
-        }
-      }
+      case "binary":
+        return checkBinary(node);
 
       case "call": {
         const definition = FUNCTIONS[node.name];
@@ -70,7 +62,12 @@ export function compileFormula(expression: string, resolveField: (ref: string) =
         if (node.args.length < minArgs || node.args.length > maxArgs) {
           throw new FormulaSyntaxError(`${node.name} expects ${describeArity(minArgs, maxArgs)}`, node.start);
         }
-        const args = node.args.map(check);
+        if (definition.volatile) volatile = true;
+        const args = node.args.map((arg, index) => {
+          const checked = check(arg);
+          expectKind(definition.params[Math.min(index, definition.params.length - 1)] ?? "any", checked, arg);
+          return checked;
+        });
         return {
           node: { ...node, args: args.map((arg) => arg.node) },
           type: definition.returns(args.map((arg) => arg.type)),
@@ -79,8 +76,43 @@ export function compileFormula(expression: string, resolveField: (ref: string) =
     }
   }
 
+  /**
+   * A chain `1+1+…` is a left-deep tree thousands of levels tall: the left spine is walked
+   * in a loop, so only real nesting (brackets, arguments) costs stack.
+   */
+  function checkBinary(top: BinaryNode): Checked {
+    const spine: BinaryNode[] = [];
+    let leftmost: Node = top;
+    while (leftmost.kind === "binary") {
+      spine.push(leftmost);
+      leftmost = leftmost.left;
+    }
+    let left = check(leftmost);
+    for (let i = spine.length - 1; i >= 0; i--) {
+      const node = spine[i];
+      const right = check(node.right);
+      const checked = { ...node, left: left.node, right: right.node };
+      switch (node.operator) {
+        case "+":
+        case "-":
+        case "*":
+        case "/":
+          expectKind("number", left, node.left);
+          expectKind("number", right, node.right);
+          left = { node: checked, type: "number" };
+          break;
+        case "&":
+          left = { node: checked, type: "text" };
+          break;
+        default:
+          left = { node: checked, type: "checkbox" };
+      }
+    }
+    return left;
+  }
+
   const { node, type } = check(parse(expression));
-  return { ast: node, fieldIds: [...fieldIds], resultType: type === "blank" ? "text" : type };
+  return { ast: node, fieldIds: [...fieldIds], resultType: type === "blank" ? "text" : type, volatile };
 }
 
 function fieldValueType(field: Field): ValueType {
@@ -99,8 +131,31 @@ function fieldValueType(field: Field): ValueType {
   }
 }
 
-function rejectDate(type: ValueType, position: number) {
-  if (type === "date") throw new FormulaSyntaxError("Use DATEADD or DATETIME_DIFF for date math", position);
+/**
+ * Rejects an argument that can never work. Only what is known statically: a text *field*
+ * may hold "12", so it passes where a number goes; the literal "a" doesn't.
+ */
+function expectKind(kind: ParamKind, { type }: Checked, node: Node) {
+  const fail = (message: string) => {
+    throw new FormulaSyntaxError(message, node.start);
+  };
+  switch (kind) {
+    case "any":
+      return;
+    case "number":
+      if (type === "date") fail("Use DATEADD or DATETIME_DIFF for date math");
+      if (node.kind === "string" && isFormulaError(toNumber(node.value))) fail(`Expected a number, found "${node.value.slice(0, 20)}"`);
+      return;
+    case "date":
+      if (type === "number" || type === "checkbox") fail("Expected a date");
+      if (node.kind === "string" && node.value !== "" && !parseStoredDate(node.value)) fail(`Expected a date, found "${node.value.slice(0, 20)}"`);
+      return;
+    case "unit":
+      if (node.kind === "string" ? !parseDateUnit(node.value) : node.kind === "number" || node.kind === "boolean") {
+        fail('Expected a unit: "seconds", "minutes", "hours", "days", "weeks", "months" or "years"');
+      }
+      return;
+  }
 }
 
 function describeArity(min: number, max: number): string {

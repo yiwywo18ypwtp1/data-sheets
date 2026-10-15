@@ -36,19 +36,31 @@ export function evaluate(formula: CompiledFormula, getValue: (fieldId: string) =
         const number = toNumber(value);
         return isFormulaError(number) ? number : -number;
       }
-      case "binary": {
-        const left = run(node.left);
-        if (isFormulaError(left)) return left;
-        const right = run(node.right);
-        if (isFormulaError(right)) return right;
-        return applyBinary(node.operator, left, right);
-      }
+      case "binary":
+        return runBinary(node);
       case "call":
         return FUNCTIONS[node.name].evaluate(
           node.args.map((arg) => () => run(arg)),
           context,
         );
     }
+  }
+  /** The left spine of a chain is walked in a loop (see checkBinary); an error on the left ends it, as it would end each enclosing node. */
+  function runBinary(top: Extract<Node, { kind: "binary" }>): FormulaValue {
+    const spine: (typeof top)[] = [];
+    let leftmost: Node = top;
+    while (leftmost.kind === "binary") {
+      spine.push(leftmost);
+      leftmost = leftmost.left;
+    }
+    let left = run(leftmost);
+    for (let i = spine.length - 1; i >= 0; i--) {
+      if (isFormulaError(left)) return left;
+      const right = run(spine[i].right);
+      if (isFormulaError(right)) return right;
+      left = applyBinary(spine[i].operator, left, right);
+    }
+    return left;
   }
   return toResultType(run(formula.ast), formula.resultType);
 }

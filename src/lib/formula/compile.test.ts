@@ -51,6 +51,47 @@ describe("compileFormula", () => {
   });
 });
 
+describe("argument types", () => {
+  it.each([
+    ['SUM({Qty}, "a")', 'Expected a number, found "a" at 11'],
+    ['{Qty} + "abc"', 'Expected a number, found "abc" at 8'],
+    ['-"x"', 'Expected a number, found "x" at 1'],
+    ["ROUND({Start})", "Use DATEADD or DATETIME_DIFF for date math at 6"],
+    ["SUM({Start}, 1)", "Use DATEADD or DATETIME_DIFF for date math at 4"],
+    ['DATEADD(5, 1, "days")', "Expected a date at 8"],
+    ['DATEADD("tomorrow", 1, "days")', 'Expected a date, found "tomorrow" at 8'],
+    ['DATEADD({Start}, "x", "days")', 'Expected a number, found "x" at 17'],
+    ['DATEADD({Start}, 1, "fortnight")', "Expected a unit"],
+    ["DATETIME_DIFF({Start}, {Qty}, 3)", "Expected a date at 23"],
+  ])("rejects %s", (expression, message) => {
+    expect(() => compileFormula(expression, byName)).toThrow(message);
+  });
+
+  it.each([
+    'SUM({Qty}, "2", TRUE, {Status})', // text fields and numeric text may hold numbers: decided per row
+    'ROUND("1.5", 0)',
+    'DATEADD("2026-01-31", 1, "Month")',
+    'DATEADD({Status}, {Qty}, {Status})',
+    'DATEADD("", 1, "days")',
+    'DATETIME_DIFF(TODAY(), {Start}, "days")',
+    'CONCAT({Start}, 1, TRUE)',
+  ])("accepts %s", (expression) => {
+    expect(() => compileFormula(expression, byName)).not.toThrow();
+  });
+});
+
+describe("volatile formulas", () => {
+  it.each([
+    ["TODAY()", true],
+    ['DATETIME_DIFF({Start}, TODAY(), "days")', true],
+    ["IF({Qty} > 1, 1, DATETIME_DIFF(TODAY(), {Start}, \"days\"))", true],
+    ["{Price} * {Qty}", false],
+    ['DATEADD({Start}, 7, "days")', false],
+  ])("%s is volatile: %s", (expression, volatile) => {
+    expect(compileFormula(expression, byName).volatile).toBe(volatile);
+  });
+});
+
 describe("stored expressions", () => {
   it("converts names to ids and back, so renaming a field keeps the formula working", () => {
     const stored = toStoredExpression('{Price} * {qty} & "{Price}"', fields);

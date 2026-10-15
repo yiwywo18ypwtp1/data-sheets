@@ -26,9 +26,21 @@ export type EvalContext = {
 /** Arguments are thunks so IF/AND/OR evaluate lazily: `IF({B} = 0, 0, {A} / {B})` never divides by zero. */
 type Thunk = () => FormulaValue;
 
+/**
+ * What an argument must be, checked when the formula is saved so a mistake like
+ * `SUM({Qty}, "a")` is rejected up front instead of showing `#VALUE!` in every row.
+ * `any` accepts everything; the others reject what can never work: a date or a text
+ * literal that isn't a number, a number where a date goes, an unknown unit name.
+ */
+export type ParamKind = "any" | "number" | "date" | "unit";
+
 type FunctionDefinition = {
   minArgs: number;
   maxArgs: number;
+  /** Per argument position; the last kind repeats for variadic functions. */
+  params: ParamKind[];
+  /** Depends on the clock, so stored results go stale as time passes (see server/freshness.ts). */
+  volatile?: true;
   returns: (argTypes: ValueType[]) => ValueType;
   evaluate: (args: Thunk[], context: EvalContext) => FormulaValue;
 };
@@ -94,6 +106,7 @@ export const FUNCTIONS: Record<string, FunctionDefinition> = {
   IF: {
     minArgs: 2,
     maxArgs: 3,
+    params: ["any"],
     returns: ([, then, otherwise]) => unify(then, otherwise ?? "blank"),
     evaluate: ([condition, then, otherwise]) => {
       const value = condition();
@@ -105,6 +118,7 @@ export const FUNCTIONS: Record<string, FunctionDefinition> = {
   AND: {
     minArgs: 1,
     maxArgs: Infinity,
+    params: ["any"],
     returns: always("checkbox"),
     evaluate: (args) => {
       for (const arg of args) {
@@ -118,6 +132,7 @@ export const FUNCTIONS: Record<string, FunctionDefinition> = {
   OR: {
     minArgs: 1,
     maxArgs: Infinity,
+    params: ["any"],
     returns: always("checkbox"),
     evaluate: (args) => {
       for (const arg of args) {
@@ -131,6 +146,7 @@ export const FUNCTIONS: Record<string, FunctionDefinition> = {
   NOT: {
     minArgs: 1,
     maxArgs: 1,
+    params: ["any"],
     returns: always("checkbox"),
     evaluate: ([arg]) => {
       const value = arg();
@@ -140,6 +156,7 @@ export const FUNCTIONS: Record<string, FunctionDefinition> = {
   SUM: {
     minArgs: 1,
     maxArgs: Infinity,
+    params: ["number"],
     returns: always("number"),
     evaluate: (args) => {
       const numbers = numberArgs(args);
@@ -149,6 +166,7 @@ export const FUNCTIONS: Record<string, FunctionDefinition> = {
   ROUND: {
     minArgs: 1,
     maxArgs: 2,
+    params: ["number"],
     returns: always("number"),
     evaluate: (args) => {
       const numbers = numberArgs(args);
@@ -160,6 +178,7 @@ export const FUNCTIONS: Record<string, FunctionDefinition> = {
   CONCAT: {
     minArgs: 1,
     maxArgs: Infinity,
+    params: ["any"],
     returns: always("text"),
     evaluate: (args) => {
       const texts = textArgs(args);
@@ -169,6 +188,7 @@ export const FUNCTIONS: Record<string, FunctionDefinition> = {
   LEN: {
     minArgs: 1,
     maxArgs: 1,
+    params: ["any"],
     returns: always("number"),
     evaluate: (args) => {
       const texts = textArgs(args);
@@ -178,6 +198,7 @@ export const FUNCTIONS: Record<string, FunctionDefinition> = {
   UPPER: {
     minArgs: 1,
     maxArgs: 1,
+    params: ["any"],
     returns: always("text"),
     evaluate: (args) => {
       const texts = textArgs(args);
@@ -187,6 +208,7 @@ export const FUNCTIONS: Record<string, FunctionDefinition> = {
   LOWER: {
     minArgs: 1,
     maxArgs: 1,
+    params: ["any"],
     returns: always("text"),
     evaluate: (args) => {
       const texts = textArgs(args);
@@ -196,6 +218,7 @@ export const FUNCTIONS: Record<string, FunctionDefinition> = {
   DATEADD: {
     minArgs: 3,
     maxArgs: 3,
+    params: ["date", "number", "unit"],
     returns: always("date"),
     evaluate: (args) => {
       const values = evaluateAll(args);
@@ -215,6 +238,7 @@ export const FUNCTIONS: Record<string, FunctionDefinition> = {
   DATETIME_DIFF: {
     minArgs: 3,
     maxArgs: 3,
+    params: ["date", "date", "unit"],
     returns: always("number"),
     evaluate: (args) => {
       const values = evaluateAll(args);
@@ -232,12 +256,15 @@ export const FUNCTIONS: Record<string, FunctionDefinition> = {
   TODAY: {
     minArgs: 0,
     maxArgs: 0,
+    params: [],
+    volatile: true,
     returns: always("date"),
     evaluate: (_args, context) => formulaDate(todayIn(context.now, context.timeZone), false),
   },
   BLANK: {
     minArgs: 0,
     maxArgs: 0,
+    params: [],
     returns: always("blank"),
     evaluate: () => null,
   },

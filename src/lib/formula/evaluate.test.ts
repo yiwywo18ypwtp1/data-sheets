@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CellValue } from "@/lib/domain/cell";
-import type { Field } from "@/lib/domain/field";
+import { MAX_FORMULA_LENGTH, type Field } from "@/lib/domain/field";
 import { compileFormula } from "./compile";
 import { evaluate, evaluateRowFormulas } from "./evaluate";
 import { MAX_NESTING } from "./parser";
@@ -86,10 +86,19 @@ describe("evaluate", () => {
     expect(run(`${"(".repeat(MAX_NESTING - 1)}1${")".repeat(MAX_NESTING - 1)}`)).toBe(1);
   });
 
+  it("evaluates a chain of the maximum formula length (about 5 000 operators)", () => {
+    const chain = `1${"+1".repeat(4999)}`;
+    expect(chain.length).toBeLessThan(MAX_FORMULA_LENGTH);
+    expect(run(chain)).toBe(5000);
+    expect(run(`{A}${"+{B}".repeat(2000)}`)).toBe(8010);
+    expect(run(`1${"+1".repeat(3000)}+{A}/0`)).toMatchObject({ code: "#DIV/0!" });
+  });
+
   it("returns errors as values and propagates them", () => {
     expect(run("{A} / 0")).toMatchObject({ kind: "error", code: "#DIV/0!" });
     expect(run("({A} / 0) + 1")).toMatchObject({ code: "#DIV/0!" });
-    expect(run('{A} + "abc"')).toMatchObject({ code: "#VALUE!" });
+    expect(run("{A} + {First}")).toMatchObject({ code: "#VALUE!" });
+    expect(run("SUM({A}, {First})")).toMatchObject({ code: "#VALUE!" });
     expect(run("{Start} < 5")).toMatchObject({ code: "#VALUE!" });
   });
 
@@ -105,7 +114,7 @@ describe("evaluate", () => {
     expect(run('DATETIME_DIFF("2026-02-27", {Start}, "months")')).toBe(0);
     expect(run('DATETIME_DIFF("2026-02-28", {Start}, "months")')).toBe(1);
     expect(run('DATETIME_DIFF({Start}, "2027-01-31", "years")')).toBe(-1);
-    expect(run('DATEADD({Start}, 1, "fortnight")')).toMatchObject({ code: "#VALUE!" });
+    expect(run('DATEADD({Start}, 1, {First})')).toMatchObject({ code: "#VALUE!" });
     expect(run('DATEADD({Empty}, 1, "day")')).toBeNull();
     expect(run('{Start} = "2026-01-31"')).toBe(true);
     expect(run('{At} > DATEADD({Start}, 1, "month")')).toBe(true);

@@ -6,6 +6,7 @@ import { now } from "@/server/clock";
 import { notFound } from "@/server/errors";
 import { resolveRowQuery, rowQueryParamsSchema } from "@/server/rowQuery";
 import { getRowsByIds, linkedRecordLabels, queryRowIds } from "@/server/rows";
+import { refreshClockFormulas } from "@/server/rowWrites";
 import { getTable } from "@/server/tables";
 
 /** Rows read and written per pull: small enough that the event loop stays responsive between chunks. */
@@ -30,6 +31,7 @@ export const GET = apiRoute(async (request, context: RouteContext<"/api/tables/[
   if (!table) throw notFound("Table");
   const query = resolveRowQuery(table, parseSearchParams(request, rowQueryParamsSchema));
   const fields = query.view ? visibleFields(table.fields, table.primaryFieldId, query.view) : table.fields;
+  refreshClockFormulas(table.id);
   const ids = queryRowIds(table, { filter: query.filter, sorts: query.sorts, groupBy: query.groupBy, context: { now: now(), timeZone: query.timeZone } });
   const primaryFieldOf = (tableId: string) => getTable(tableId)?.primaryFieldId ?? null;
 

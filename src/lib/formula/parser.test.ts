@@ -86,9 +86,9 @@ describe("parse", () => {
     expect(syntaxError(deep).reason).toBe("Formula is nested too deeply");
   });
 
-  it("counts operator chains as nesting, so a 10 000-character sum can't overflow the stack", () => {
-    expect(syntaxError(`1${"+1".repeat(4999)}`).reason).toBe("Formula is too long or nested too deeply");
+  it("doesn't count operator chains as nesting: a chain is bounded by the formula length only", () => {
     expect(show(parse(`1${"+1".repeat(MAX_NESTING - 1)}`))).toMatch(/^\(\+ /);
+    expect(show(parse(`1${"+1".repeat(4999)}`))).toMatch(/^\(\+ /);
   });
 
   it.each([

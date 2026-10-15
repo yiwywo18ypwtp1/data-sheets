@@ -6,6 +6,7 @@ import type { Sort } from "@/lib/domain/view";
 import { now } from "./clock";
 import { ApiError } from "./errors";
 import { getRowsByIds, linkedRecordLabels, queryGroupedIds } from "./rows";
+import { refreshClockFormulas } from "./rowWrites";
 import { getTable } from "./tables";
 
 /** Cards loaded per column at first and per "Show more". */
@@ -28,6 +29,7 @@ export function kanbanColumns(
   if (field?.type !== "singleSelect") {
     throw new ApiError("VALIDATION_ERROR", 400, "A board is stacked by a single select field", { fieldErrors: { fieldId: "Not a single select field" } });
   }
+  refreshClockFormulas(table.id);
   const { ids, groups } = queryGroupedIds(table, {
     filter: query.filter,
     // The stacking field orders the groups; it can't also be a sort within them.

@@ -14,8 +14,9 @@ export type Node =
 
 /**
  * Deep nesting is legal (200 brackets must work) but bounded, so a hostile formula can't
- * overflow the stack. Each operator in a chain (`1+1+…`) adds a level too: the chain
- * becomes a left-deep tree that the type checker and evaluator walk recursively.
+ * overflow the stack. Operator chains (`1+1+…`) don't count: they become a left-deep tree,
+ * which the type checker and evaluator walk in a loop, so a chain is bounded only by the
+ * formula's length limit.
  */
 export const MAX_NESTING = 512;
 
@@ -75,7 +76,6 @@ export function parse(input: string): Node {
       if (token.type !== "operator") break;
       const power = BINDING_POWER[token.value];
       if (power <= minBindingPower) break;
-      if (++depth >= MAX_NESTING) throw new FormulaSyntaxError("Formula is too long or nested too deeply", token.start);
       next();
       const right = parseExpression(power, depth + 1);
       left = { kind: "binary", operator: token.value, left, right, start: token.start };

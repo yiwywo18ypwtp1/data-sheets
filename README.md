@@ -104,7 +104,9 @@ npm run lint
 | `{A} / 0`, `IF({Empty}, 1)` | `#DIV/0!` in the cell; empty |
 | a cycle through three fields | refused on save with the path |
 | a field of another table in a formula | `Unknown field` (use a lookup) |
-| 200 nested brackets / `1+1+…` of 10 000 characters | works / refused with a position, no stack overflow |
+| 200 nested brackets / `1+1+…` of 10 000 characters (5 000 operators) | both work; 600 nested brackets are refused with a position, no stack overflow |
+| `SUM({Qty}, "a")`, `{Qty} + "abc"`, `DATEADD({Start}, 1, "fortnight")`, `DATEADD(5, 1, "days")` | refused on save with a position (a text field may hold a number, so it passes; a literal that can never work does not) |
+| `TODAY()` formulas ("days to due") and filters on them after midnight | the first read of a new day recomputes them, without a new record revision |
 | a 100 000-character string | formulas are limited to 10 000 characters; a 100 000-character text value works (`LEN` is tested) |
 | rename / delete a field a formula uses | keeps working / 409 → confirm → `#REF!` |
 | 3 × 1 000 pasted cells with invalid values; 1 column into 5 | invalid ones highlighted; repeated across the 5 |
@@ -129,6 +131,6 @@ Known limitations:
 - Lookups display the target's raw text (not locale-formatted).
 - A schema change remounts the grid, which drops the undo history and the panel's unsaved draft.
 - Undo of a deletion restores the records, but not links to them from other tables.
-- `TODAY()` in formulas is evaluated when a row is written, so it goes stale until the row changes.
+- `TODAY()` is evaluated in UTC, and refreshed by the first read of the table's base each UTC day (and on every write), not on a timer: a server that nobody reads doesn't refresh, and open grids pick the new values up on their next reload.
 - Offset windows: after an edit that moves a row in the current sort (or a row added by someone), a row can repeat or be skipped at a block boundary until the windows reload.
 - Realtime presence and rate limits live in the server's memory (one process), as a mock would.

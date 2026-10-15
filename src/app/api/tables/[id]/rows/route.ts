@@ -3,6 +3,7 @@ import { apiRoute, parseSearchParams } from "@/server/api";
 import { getCurrentUser } from "@/server/auth";
 import { now } from "@/server/clock";
 import { notFound } from "@/server/errors";
+import { refreshClockFormulas } from "@/server/rowWrites";
 import { resolveRowQuery, rowQueryParamsSchema } from "@/server/rowQuery";
 import { linkedRecordLabels, queryRows } from "@/server/rows";
 import { getTable } from "@/server/tables";
@@ -24,6 +25,7 @@ export const GET = apiRoute(async (request, context: RouteContext<"/api/tables/[
   const params = parseSearchParams(request, querySchema);
   const { filter, sorts, groupBy, timeZone } = resolveRowQuery(table, params);
 
+  refreshClockFormulas(table.id);
   const result = queryRows(table, {
     filter,
     sorts,

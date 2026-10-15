@@ -18,6 +18,7 @@ import { getCurrentUser } from "@/server/auth";
 import { now } from "@/server/clock";
 import { KANBAN_PAGE, kanbanColumns } from "@/server/kanban";
 import { linkedRecordLabels, queryRows } from "@/server/rows";
+import { refreshClockFormulas } from "@/server/rowWrites";
 import { getBase, getBaseSchema, getTable, getView } from "@/server/tables";
 
 // Matches the grid store's block size, so the first block is complete.
@@ -122,6 +123,7 @@ export default async function ViewPage({ params, searchParams }: PageProps<"/b/[
   }
 
   // The viewer's time zone isn't known on the server; UTC only matters for "today" filters.
+  refreshClockFormulas(table.id);
   const initialWindow = queryRows(table, {
     filter: linkFilterValid ? linkFilter : view.filter,
     sorts: view.sorts,
