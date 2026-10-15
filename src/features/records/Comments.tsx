@@ -146,11 +146,14 @@ function Composer({ users, onSubmit }: { users: UserOption[]; onSubmit: (body: s
     if (!element || !query) return;
     const caret = element.selectionStart;
     const text = `${element.value.slice(0, query.start)}@${user.name} ${element.value.slice(caret)}`;
+    // The caret is placed in the same task as the text: typing right after picking (or a fast
+    // typist) must land after the name, not before it when a later frame moves the caret.
+    const position = query.start + user.name.length + 2;
+    element.value = text;
+    element.setSelectionRange(position, position);
     form.setValue("body", text, { shouldDirty: true });
     setPicked((current) => [...current, user]);
     setQuery(null);
-    const position = query.start + user.name.length + 2;
-    requestAnimationFrame(() => element.setSelectionRange(position, position));
   }
 
   const submit = form.handleSubmit(async ({ body }) => {
