@@ -1,7 +1,14 @@
 import Link from "next/link";
 import { Suspense } from "react";
+import { ServiceWorkerRegistration } from "@/features/offline/ServiceWorkerRegistration";
 import { MentionsInbox } from "@/features/records/MentionsInbox";
 import { CurrentUserBadge } from "@/features/settings/CurrentUserBadge";
+import { getCurrentUser } from "@/server/auth";
+
+/** Binds the device's offline data to the cookie's user (reading the cookie makes it dynamic, hence its own Suspense). */
+async function OfflineScope() {
+  return <ServiceWorkerRegistration userId={(await getCurrentUser()).id} />;
+}
 
 /** The app's frame (bases, settings). Public forms (`/f/…`) are outside it: guests see no app chrome. */
 export default function AppLayout({ children }: LayoutProps<"/">) {
@@ -20,6 +27,9 @@ export default function AppLayout({ children }: LayoutProps<"/">) {
         </div>
       </header>
       <main className="flex min-h-0 flex-1 flex-col">{children}</main>
+      <Suspense fallback={null}>
+        <OfflineScope />
+      </Suspense>
     </>
   );
 }

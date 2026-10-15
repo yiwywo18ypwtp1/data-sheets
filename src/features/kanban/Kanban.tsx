@@ -97,7 +97,7 @@ export function Kanban({ tableId, tableName, fields, primaryFieldId, view, viewV
     const limit = Math.min(500, Math.max(PAGE, ...shown.map((column) => column.rows.length)));
     const ticket = ++generation.current;
     try {
-      const response = await withOfflineCopy(tableId, JSON.stringify(["kanban", current, stackBy]), () => fetchKanban(tableId, current, stackBy, { limit }), {
+      const response = await withOfflineCopy(currentUser.id, tableId, JSON.stringify(["kanban", current, stackBy]), () => fetchKanban(tableId, current, stackBy, { limit }), {
         onCopy: setCopyAt,
         onFresh: () => setCopyAt(null),
       });
@@ -108,7 +108,7 @@ export function Kanban({ tableId, tableName, fields, primaryFieldId, view, viewV
       if (ticket === generation.current) setAnnouncement(cause instanceof Error ? `Couldn't load the board: ${cause.message}` : "Couldn't load the board");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- scheduleReload is hoisted below and only reads refs
-  }, [tableId]);
+  }, [tableId, currentUser.id]);
   function scheduleReload(delay = RELOAD_DELAY_MS) {
     if (reloadTimer.current) clearTimeout(reloadTimer.current);
     reloadTimer.current = setTimeout(() => void reload(), delay);

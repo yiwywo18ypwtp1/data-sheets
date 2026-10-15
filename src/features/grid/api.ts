@@ -33,10 +33,18 @@ export function getClientId(): string {
   return clientId;
 }
 
+let actingUserId: string | null = null;
+
+/** The user this page was opened for; writes name them, so a switched user can't inherit them (see server/api.ts). */
+export function setActingUser(id: string | null): void {
+  actingUserId = id;
+}
+
 /** Fetches JSON; a non-2xx answer becomes an `ApiRequestError` from the API's error body. A 204 resolves to null. */
 export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("x-client-id", getClientId());
+  if (actingUserId) headers.set("x-acting-user", actingUserId);
   const response = await fetch(url, { ...init, headers });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as ErrorBody | null;

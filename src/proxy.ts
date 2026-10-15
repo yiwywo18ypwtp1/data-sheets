@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { resolveUserId, USER_COOKIE } from "@/server/auth";
 import { getBase, getFirstBaseId, getView } from "@/server/tables";
 
 /**
@@ -9,6 +10,13 @@ import { getBase, getFirstBaseId, getView } from "@/server/tables";
  * rendering starts. The pages keep their own checks; this only fixes the status.
  */
 export function proxy(request: NextRequest) {
+  const response = route(request);
+  // The service worker files a page under the user it was rendered for (public/sw.js).
+  if (!request.nextUrl.pathname.startsWith("/f/")) response.headers.set("x-ds-user", resolveUserId(request.cookies.get(USER_COOKIE)?.value));
+  return response;
+}
+
+function route(request: NextRequest) {
   const { pathname } = request.nextUrl;
   // A public form: the view must exist and be a form.
   if (pathname.startsWith("/f/")) {

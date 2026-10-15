@@ -11,6 +11,11 @@ export const USER_COOKIE = "ds_user";
 /** Without a cookie you act as the creator, so every feature works on a fresh checkout. */
 const DEFAULT_USER_ID = "usr_creator";
 
+/** The user a cookie value stands for: unknown or missing values act as the default user, like `getCurrentUser`. */
+export function resolveUserId(cookieValue: string | undefined): string {
+  return cookieValue && findUser(cookieValue) ? cookieValue : DEFAULT_USER_ID;
+}
+
 export function listUsers(): User[] {
   return getDb().prepare("SELECT id, name, role FROM users ORDER BY rowid").all() as User[];
 }
@@ -35,6 +40,9 @@ export function assertRole(user: User, required: Role): void {
     throw new ApiError("FORBIDDEN", 403, `This action requires the ${required} role; you are a ${user.role}`);
   }
 }
+
+/** Header a page sends with its writes: the user it was opened for (see `apiRoute`). */
+export const ACTING_USER_HEADER = "x-acting-user";
 
 /** Header a browser tab sends with its writes, so it can recognise (and skip) its own realtime events. */
 export const CLIENT_ID_HEADER = "x-client-id";

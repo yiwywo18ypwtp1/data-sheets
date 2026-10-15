@@ -1,5 +1,6 @@
 import "server-only";
 import { ZodError, type z } from "zod";
+import { ACTING_USER_HEADER, getCurrentUser } from "./auth";
 import { ApiError, zodFieldErrors, type ErrorBody } from "./errors";
 
 /**
@@ -32,10 +33,24 @@ export function errorResponse(error: unknown): Response {
   return Response.json(body, { status: 500 });
 }
 
+/**
+ * A page keeps working after the user is switched in another tab (or in this one, while its
+ * edits were still queued). Its writes name the user it was opened for; if the cookie now
+ * says someone else, they are refused instead of being saved under the new user's name.
+ */
+async function assertActingUser(request: Request): Promise<void> {
+  const acting = request.headers.get(ACTING_USER_HEADER);
+  if (!acting || request.method === "GET" || request.method === "HEAD") return;
+  if (acting !== (await getCurrentUser()).id) {
+    throw new ApiError("USER_CHANGED", 409, "You switched to another user in this browser. Reload the page to continue as them; this change was not saved.");
+  }
+}
+
 export function apiRoute<Context>(handler: (request: Request, context: Context) => Promise<Response> | Response) {
   return async (request: Request, context: Context): Promise<Response> => {
     try {
       await simulateNetwork();
+      await assertActingUser(request);
       return await handler(request, context);
     } catch (error) {
       return errorResponse(error);

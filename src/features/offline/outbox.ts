@@ -8,6 +8,9 @@ import { idb, OUTBOX } from "./idb";
  * looks for records of its table whose lock is free, so their owner is gone: it takes
  * their edits over (deleting the record inside the lock, so two tabs can't both take
  * them) and sends them. A record whose owner is still open in another tab is left alone.
+ * Records are also tied to the user they were made as: after the user is switched, the new
+ * user's grid doesn't take them over (they'd be saved under the wrong name); they wait
+ * for their own user to open the table again.
  */
 
 export type OutboxEdit = {
@@ -19,7 +22,7 @@ export type OutboxEdit = {
   restoreCreatedAt?: string;
 };
 
-export type OutboxRecord = { ownerId: string; tableId: string; edits: OutboxEdit[]; savedAt: string };
+export type OutboxRecord = { ownerId: string; /** The user the edits were made as. */ userId: string; tableId: string; edits: OutboxEdit[]; savedAt: string };
 
 export type OutboxStorage = {
   put(record: OutboxRecord): Promise<void>;
@@ -69,6 +72,7 @@ export class Outbox {
   constructor(
     private readonly tableId: string,
     readonly ownerId: string,
+    private readonly userId: string,
     private readonly storage: OutboxStorage = idbOutboxStorage,
     private readonly locks: Locks | null = webLocks,
   ) {}
@@ -96,7 +100,7 @@ export class Outbox {
     if (edits === null) return this.saving;
     // Writes go one after another, so an older state never lands after a newer one.
     this.saving = this.saving.then(() =>
-      (edits.length === 0 ? this.storage.delete(this.ownerId) : this.storage.put({ ownerId: this.ownerId, tableId: this.tableId, edits, savedAt: new Date().toISOString() })).catch(() => undefined),
+      (edits.length === 0 ? this.storage.delete(this.ownerId) : this.storage.put({ ownerId: this.ownerId, userId: this.userId, tableId: this.tableId, edits, savedAt: new Date().toISOString() })).catch(() => undefined),
     );
     return this.saving;
   }
@@ -115,11 +119,11 @@ export class Outbox {
       return [];
     }
     const adopted: OutboxEdit[] = [];
-    for (const record of records.filter((candidate) => candidate.ownerId !== this.ownerId).sort((a, b) => a.savedAt.localeCompare(b.savedAt))) {
+    for (const record of records.filter((candidate) => candidate.ownerId !== this.ownerId && candidate.userId === this.userId).sort((a, b) => a.savedAt.localeCompare(b.savedAt))) {
       const edits = await this.locks.ifFree(lockName(record.ownerId), async () => {
         // Read again inside the lock: another tab may have taken it over a moment ago.
         const current = await this.storage.get(record.ownerId);
-        if (!current) return [];
+        if (current?.userId !== this.userId) return [];
         await this.storage.delete(record.ownerId);
         return current.edits;
       });

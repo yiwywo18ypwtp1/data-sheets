@@ -48,7 +48,7 @@ afterEach(() => {
 describe("Outbox", () => {
   it("keeps the newest queue, and removes the record when the queue empties", async () => {
     const storage = memoryStorage();
-    const outbox = new Outbox("tbl", "tab_a", storage, memoryLocks());
+    const outbox = new Outbox("tbl", "tab_a", "usr_a", storage, memoryLocks());
     await outbox.start();
     outbox.save([edit("row_1", "x")]);
     outbox.save([edit("row_1", "x"), edit("row_2", "y")]);
@@ -63,8 +63,8 @@ describe("Outbox", () => {
   it("takes over the queue of a closed tab once, and leaves an open tab's alone", async () => {
     const storage = memoryStorage();
     const locks = memoryLocks();
-    const closed = new Outbox("tbl", "tab_closed", storage, locks);
-    const open = new Outbox("tbl", "tab_open", storage, locks);
+    const closed = new Outbox("tbl", "tab_closed", "usr_a", storage, locks);
+    const open = new Outbox("tbl", "tab_open", "usr_a", storage, locks);
     await closed.start();
     await open.start();
     closed.save([edit("row_1", "offline edit")]);
@@ -73,21 +73,42 @@ describe("Outbox", () => {
     await open.flush();
     closed.dispose(); // the tab closes: its lock is released
     await vi.advanceTimersByTimeAsync(0);
-    await storage.put({ ownerId: "tab_other_table", tableId: "tbl_other", edits: [edit("row_9", "z")], savedAt: "" });
+    await storage.put({ ownerId: "tab_other_table", userId: "usr_a", tableId: "tbl_other", edits: [edit("row_9", "z")], savedAt: "" });
 
-    const next = new Outbox("tbl", "tab_new", storage, locks);
+    const next = new Outbox("tbl", "tab_new", "usr_a", storage, locks);
     await next.start();
     expect(await next.adoptOrphans()).toEqual([edit("row_1", "offline edit")]);
     expect(storage.records.has("tab_closed")).toBe(false);
     expect(storage.records.has("tab_open")).toBe(true);
     // A second tab opening later finds nothing left to take.
-    expect(await new Outbox("tbl", "tab_late", storage, locks).adoptOrphans()).toEqual([]);
+    expect(await new Outbox("tbl", "tab_late", "usr_a", storage, locks).adoptOrphans()).toEqual([]);
+  });
+
+  it("doesn't hand one user's unsent edits to another user, and keeps them for their own", async () => {
+    const storage = memoryStorage();
+    const locks = memoryLocks();
+    const first = new Outbox("tbl", "tab_a", "usr_a", storage, locks);
+    await first.start();
+    first.save([edit("row_1", "typed as A")]);
+    await first.flush();
+    first.dispose(); // A leaves, the user is switched to B
+    await vi.advanceTimersByTimeAsync(0);
+
+    const asB = new Outbox("tbl", "tab_b", "usr_b", storage, locks);
+    await asB.start();
+    expect(await asB.adoptOrphans()).toEqual([]);
+    expect(storage.records.get("tab_a")?.edits).toEqual([edit("row_1", "typed as A")]);
+
+    // Back as A, in a new tab: the edits are theirs again.
+    const backAsA = new Outbox("tbl", "tab_a2", "usr_a", storage, locks);
+    await backAsA.start();
+    expect(await backAsA.adoptOrphans()).toEqual([edit("row_1", "typed as A")]);
   });
 
   it("takes nothing over without Web Locks (an open tab can't be told from a closed one)", async () => {
     const storage = memoryStorage();
-    await storage.put({ ownerId: "tab_x", tableId: "tbl", edits: [edit("row_1", "x")], savedAt: "" });
-    expect(await new Outbox("tbl", "tab_y", storage, null).adoptOrphans()).toEqual([]);
+    await storage.put({ ownerId: "tab_x", userId: "usr_a", tableId: "tbl", edits: [edit("row_1", "x")], savedAt: "" });
+    expect(await new Outbox("tbl", "tab_y", "usr_a", storage, null).adoptOrphans()).toEqual([]);
   });
 });
 

@@ -84,7 +84,7 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
       fields,
       // Offline, windows come from the copy kept in IndexedDB (see offline/windowCache.ts).
       fetchWindow: (query, offset, limit, signal, withGroups) =>
-        withOfflineCopy(tableId, JSON.stringify(["rows", query, offset, limit, withGroups === true]), () => fetchRowWindow(tableId, query, offset, limit, signal, withGroups), {
+        withOfflineCopy(currentUser.id, tableId, JSON.stringify(["rows", query, offset, limit, withGroups === true]), () => fetchRowWindow(tableId, query, offset, limit, signal, withGroups), {
           onCopy: (savedAt) => created.setReadingCopy(savedAt),
           onFresh: () => created.setReadingCopy(null),
         }),
@@ -97,7 +97,7 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
 
   // Unsent edits are kept in IndexedDB, and edits an earlier session couldn't send are taken over.
   useEffect(() => {
-    const outbox = new Outbox(tableId, `${getClientId()}:${tableId}:${crypto.randomUUID().slice(0, 8)}`);
+    const outbox = new Outbox(tableId, `${getClientId()}:${tableId}:${crypto.randomUUID().slice(0, 8)}`, currentUser.id);
     let active = true;
     store.setPersistence((edits) => outbox.save(edits));
     void outbox
@@ -111,7 +111,7 @@ export function Grid({ tableId, canEdit, canChangeSchema, tables, linkFilter, li
       store.setPersistence(null);
       outbox.dispose();
     };
-  }, [store, tableId]);
+  }, [store, tableId, currentUser.id]);
 
   const { locale, timeZone } = useViewerLocale();
   useEffect(() => store.setTimeZone(timeZone), [store, timeZone]);

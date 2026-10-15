@@ -1,13 +1,14 @@
 /**
  * The offline database: unsent edits per tab (`outbox`) and copies of loaded row windows
- * (`windows`). Every call opens, does one request and closes, like the import session:
+ * (`windows`), both kept per user: a record belongs to the user it was made for and is
+ * only ever read, sent or shown for that user. Every call opens, does one request and closes, like the import session:
  * these are rare, small operations, and a held connection would block version upgrades
  * from another tab. Storage can be unavailable (private mode, quota, tests without
  * IndexedDB); callers treat a failure as "not stored", nothing else breaks.
  */
 
 const DB_NAME = "data-sheets-offline";
-const VERSION = 1;
+const VERSION = 2;
 export const OUTBOX = "outbox";
 export const WINDOWS = "windows";
 
@@ -17,6 +18,8 @@ function open(): Promise<IDBDatabase> {
     const request = indexedDB.open(DB_NAME, VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
+      // Version 1 kept records without an owner; it can't be told whose they were, so they're dropped.
+      for (const name of [OUTBOX, WINDOWS]) if (db.objectStoreNames.contains(name)) db.deleteObjectStore(name);
       db.createObjectStore(OUTBOX, { keyPath: "ownerId" }).createIndex("tableId", "tableId");
       const windows = db.createObjectStore(WINDOWS, { keyPath: "key" });
       windows.createIndex("tableId", "tableId");

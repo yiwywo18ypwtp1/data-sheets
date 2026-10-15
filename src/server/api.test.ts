@@ -126,6 +126,20 @@ describe("POST /api/tables/:id/rows/batch", () => {
     expect(results.map((result) => result.ok)).toEqual([true, false]);
   });
 
+  it("refuses a write from a page that was opened for another user, and saves it for the same user", async () => {
+    const write = (acting: string) =>
+      batchRoute.POST(
+        send("POST", "/api/tables/tbl_orders/rows/batch", { ops: [{ op: "update", rowId: "row_o_000003", values: { fld_o_qty: 4 }, rev: 1 }] }, { "x-acting-user": acting }),
+        params({ id: "tbl_orders" }),
+      );
+    userId = "usr_editor"; // the cookie was switched to the editor after the page was opened as the creator
+    const refused = await write("usr_creator");
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("USER_CHANGED");
+    expect(getRowsByIds("tbl_orders", ["row_o_000003"])[0].values.fld_o_qty).not.toBe(4);
+    expect((await write("usr_editor")).status).toBe(200);
+  });
+
   it("rejects malformed bodies and more than 1000 ops", async () => {
     expect((await batch("{not json")).status).toBe(400);
     const ops = Array.from({ length: 1001 }, () => ({ op: "delete", rowId: "row_x", rev: 1 }));

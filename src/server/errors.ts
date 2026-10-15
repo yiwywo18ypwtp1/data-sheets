@@ -8,6 +8,7 @@ export type ErrorCode =
   | "NOT_FOUND"
   | "CONFLICT"
   | "PRECONDITION_FAILED"
+  | "USER_CHANGED"
   | "MOCK_FAILURE"
   | "INTERNAL";
 
